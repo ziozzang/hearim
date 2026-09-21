@@ -207,13 +207,25 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 				if len(texts) < 2 {
 					continue
 				}
-				res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
+				probeReq := provider.NextTokenScoreRequest{
 					Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
 					Endpoint:            endpointKind(opts.Endpoint),
 					PromptText:          prefix,
 					CandidateTokenTexts: texts,
 					TopK:                caps.MaxTopLogprobs,
-				})
+					NoReasoning:         opts.NoReasoning,
+					ReasoningField:      opts.ReasoningField,
+					ReasoningValue:      opts.ReasoningValue,
+				}
+				res, err := adpt.ScoreNextToken(ctx, probeReq)
+				if err != nil {
+					// Tight-range servers (Qwen token plan: [0,5]) reject the
+					// default N outright; retry once at the parsed cap.
+					if cap := parseTopNCap(err.Error()); cap > 0 && cap < probeReq.TopK {
+						probeReq.TopK = cap
+						res, err = adpt.ScoreNextToken(ctx, probeReq)
+					}
+				}
 				if err != nil {
 					lastErr = err
 					continue
@@ -284,6 +296,9 @@ func (r *Registry) sweepTopN(ctx context.Context, adpt provider.Adapter, opts Op
 			CandidateTokenIDs:   ids,
 			CandidateTokenTexts: texts,
 			TopK:                n,
+			NoReasoning:         opts.NoReasoning,
+			ReasoningField:      opts.ReasoningField,
+			ReasoningValue:      opts.ReasoningValue,
 		})
 		if err != nil {
 			// A rejected N reveals the server cap (parse "between 0 and X"
@@ -325,24 +340,40 @@ func prevLadder(n int) int {
 	return prev
 }
 
-// parseTopNCap extracts the cap from server rejections like
-// "top_logprobs must be between 0 and 20".
+// parseTopNCap extracts the cap from server rejections. Known phrasings:
+//
+//	Ollama:  "top_logprobs must be between 0 and 20"
+//	Qwen:    "Range of top_logprobs should be [0, 5]"
 func parseTopNCap(msg string) int {
 	for _, marker := range []string{"between 0 and ", "must be between 0 and "} {
 		if i := strings.Index(msg, marker); i >= 0 {
-			rest := msg[i+len(marker):]
-			end := 0
-			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
-				end++
-			}
-			if end > 0 {
-				if v, err := strconv.Atoi(rest[:end]); err == nil && v > 0 {
-					return v
-				}
+			if v := trailingInt(msg[i+len(marker):]); v > 0 {
+				return v
 			}
 		}
 	}
+	if i := strings.Index(msg, "[0,"); i >= 0 {
+		if v := trailingInt(msg[i+3:]); v > 0 {
+			return v
+		}
+	}
 	return 0
+}
+
+func trailingInt(s string) int {
+	s = strings.TrimLeft(s, " \t")
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	v, err := strconv.Atoi(s[:end])
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // runCompletionProbe verifies that a real 1-token completion returns
@@ -355,14 +386,39 @@ func (r *Registry) runCompletionProbe(ctx context.Context, adpt provider.Adapter
 		ids = append(ids, e.TokenID)
 		texts = append(texts, e.TokenText)
 	}
+	// The completion probe runs under the production reasoning control and
+	// respects the discovered N ladder (tight-range servers reject the
+	// engine default outright).
+	topK := r.TopN
+	if topK <= 0 {
+		topK = adpt.Capabilities().MaxTopLogprobs
+	}
 	res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
 		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
 		Endpoint:            endpointKind(r.Endpoint),
-		PromptText:          opts.PromptBase + r.Delimiter,
+		PromptText:          opts.PromptBase + opts.UserSuffix + opts.CloseTag + r.Delimiter,
 		CandidateTokenIDs:   ids,
 		CandidateTokenTexts: texts,
-		TopK:                adpt.Capabilities().MaxTopLogprobs,
+		TopK:                topK,
+		NoReasoning:         opts.NoReasoning,
+		ReasoningField:      opts.ReasoningField,
+		ReasoningValue:      opts.ReasoningValue,
 	})
+	if err != nil {
+		if cap := parseTopNCap(err.Error()); cap > 0 && cap < topK {
+			res, err = adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
+				Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
+				Endpoint:            endpointKind(r.Endpoint),
+				PromptText:          opts.PromptBase + opts.UserSuffix + opts.CloseTag + r.Delimiter,
+				CandidateTokenIDs:   ids,
+				CandidateTokenTexts: texts,
+				TopK:                cap,
+				NoReasoning:         opts.NoReasoning,
+				ReasoningField:      opts.ReasoningField,
+				ReasoningValue:      opts.ReasoningValue,
+			})
+		}
+	}
 	if err != nil {
 		r.ProbeErr = err.Error()
 		return

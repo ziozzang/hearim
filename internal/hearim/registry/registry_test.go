@@ -363,7 +363,10 @@ func TestSweepDiscoversOptimalNAndCap(t *testing.T) {
 
 func TestParseTopNCap(t *testing.T) {
 	if v := parseTopNCap(`upstream 400: top_logprobs must be between 0 and 20`); v != 20 {
-		t.Errorf("cap = %d", v)
+		t.Errorf("ollama cap = %d", v)
+	}
+	if v := parseTopNCap(`upstream 400: {"message":"Range of top_logprobs should be [0, 5]"}`); v != 5 {
+		t.Errorf("qwen cap = %d", v)
 	}
 	if v := parseTopNCap("some other error"); v != 0 {
 		t.Errorf("unrelated error should give 0, got %d", v)

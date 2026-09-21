@@ -120,6 +120,82 @@ providers:
     models: [{name: openai/gpt-4o-mini}]
 ```
 
+## Alibaba Qwen token plan (measured 2026-09-21) — works
+
+`https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`
+(OpenAI-compatible; the coding-subscription token plan). **Third verified
+exact-evaluation provider** (with Ollama local chat and OpenRouter):
+
+- logprobs: ✅ chat completions, `top_logprobs` capped at **[0, 5]** — the
+  tightest cap measured; the N sweep settles at 4 for two-label questions
+- thinking: `enable_thinking: false` works on qwen3.6-flash / 3.7-plus /
+  3.8-flash (immediate label content); qwen3.7-max returns no logprobs
+  either way; thinking-mode generations sometimes still surface labels in
+  top-5 but do not rely on that
+- verified end-to-end through `/v1/systemone`: noul even/odd 0.9941 /
+  0.018, choice → billing, score 0.90 on a 2-level rubric
+
+```yaml
+providers:
+  - id: qwen-plan
+    engine: generic-openai
+    base_url: ${QWEN_TOKEN_PLAN_BASE_URL}
+    api_key: ${QWEN_TOKEN_PLAN_KEY}
+    endpoint: chat_completions
+    models:
+      - name: qwen3.6-flash
+        thinking: {disable_field: enable_thinking, disable_value: false}
+```
+
+## Grok via xAI OAuth (measured 2026-09-21) — blocked on token refresh
+
+`~/.grok/auth.json` carries an `xai-oauth` provider (access + refresh
+tokens, discovery at `https://auth.x.ai/oauth2/token`). The stored access
+token is stale (403 `bad-credentials`), and refreshing requires the CLI's
+client_id which is **not persisted on disk** (my guess at the public
+client was rejected: `invalid_client`). Re-login through the grok CLI
+refreshes it. xAI's public API supports `logprobs` on chat completions,
+so once a valid token exists the mechanical attach is:
+
+```yaml
+providers:
+  - id: grok
+    engine: generic-openai
+    base_url: https://api.x.ai/v1
+    api_key: ${GROK_OAUTH_ACCESS_TOKEN}   # or a headers: entry
+    endpoint: chat_completions
+```
+
+Feasibility: high, pending a fresh token; untested end-to-end.
+
+## OpenAI Codex via ChatGPT OAuth (measured 2026-09-21) — no logprob surface
+
+`~/.codex/auth.json` (auth_mode chatgpt) works against
+`https://chatgpt.com/backend-api/codex/responses` — a **locked-down
+subset of the Responses API**: `store: false` and `stream: true` are
+mandatory, `max_output_tokens` and `top_logprobs` are rejected
+("Unsupported parameter"), and streaming deltas carry no probability
+data. Models: `gpt-5.6-sol` (from config.toml); everything else 400s.
+Verdict: usable for generation, **no logprobs → no exact evaluation**;
+sampling-based approximation only.
+
+## opencode go (feasibility note — untested, no key at hand)
+
+opencode Zen/go ($10/mo, 18 models) exposes an OpenAI-compatible
+`https://opencode.ai/zen/v1/chat/completions` (DeepSeek, MiniMax, GLM,
+Kimi) plus Anthropic-style messages for Qwen/Claude. hearim attaches
+mechanically: `engine: generic-openai`, that base URL,
+`endpoint: chat_completions`, key in `api_key`. Unknowns a probe must
+settle: per-model logprobs passthrough (undocumented), thinking controls
+(the GLM side mirrors z.ai's always-thinking behavior), and rate limits
+on a plan aimed at coding agents. One output token per question makes
+the token budget go far; run `hearim probe` first — it answers go/no-go
+in a handful of calls. Notable symmetry: Zen also exposes
+`/zen/v1/systemone` for Jev models, so hearim can both consume and
+serve that contract shape.
+
+Sources: [opencode.ai](https://opencode.ai), [opencode zen docs](https://opencode.ai/docs/zen), [bitdoze review](https://www.bitdoze.com).
+
 ## Model-card survey: thinking control differs per model
 
 - **gemma4** — thinking toggles via a `<|think|>` token at the start of the
