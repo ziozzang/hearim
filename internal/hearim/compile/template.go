@@ -114,15 +114,28 @@ func noulSequenceText(truth bool, desc *string) string {
 	return name
 }
 
-// ChatMessages renders the same content as Chat Completions roles for
-// chat-only backends (TODO.md §5.1 chat variant). The system message carries
-// the evaluator contract, the first user message carries the state block,
-// and a second user message carries question and criteria. The registry uses
-// apply_chat_template(add_generation_prompt=true) on exactly these messages
-// for probing, so raw and chat registries stay separate.
+// ChatMessage is one chat role. Content is a plain string, or — for vision
+// routes carrying images — the OpenAI multimodal content-parts array
+// ([{type:"text",...},{type:"image_url",image_url:{url}}]).
 type ChatMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+// ImageParts converts image references to OpenAI image_url content parts.
+func ImageParts(images []string) []map[string]any {
+	parts := make([]map[string]any, 0, len(images))
+	for _, u := range images {
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]string{"url": u},
+		})
+	}
+	return parts
+}
+
+func textPart(text string) map[string]any {
+	return map[string]any{"type": "text", "text": text}
 }
 
 func (p *EvaluationPlan) ChatMessages(q *CompiledQuestion) []ChatMessage {
@@ -142,9 +155,17 @@ func (p *EvaluationPlan) ChatMessages(q *CompiledQuestion) []ChatMessage {
 	if idx := strings.Index(statePart, "<state"); idx >= 0 {
 		statePart = statePart[idx:]
 	}
+	// Vision routes: the state message carries the images as content parts
+	// next to the (still canonical, still escaped) state text.
+	var stateContent any = strings.TrimRight(statePart, "\n")
+	if len(p.Images) > 0 {
+		parts := []map[string]any{textPart(strings.TrimRight(statePart, "\n"))}
+		parts = append(parts, ImageParts(p.Images)...)
+		stateContent = parts
+	}
 	return []ChatMessage{
 		{Role: "system", Content: system},
-		{Role: "user", Content: strings.TrimRight(statePart, "\n")},
+		{Role: "user", Content: stateContent},
 		{Role: "user", Content: strings.TrimRight(questionPart, "\n")},
 	}
 }

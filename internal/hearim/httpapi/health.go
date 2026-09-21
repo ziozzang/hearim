@@ -98,6 +98,7 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
+		s.recordRequestMetric(r.URL.Path, sw.status, time.Since(start))
 
 		// §11: no raw state in logs; question ids, token counts and hashes only.
 		s.Logger.Info("http",

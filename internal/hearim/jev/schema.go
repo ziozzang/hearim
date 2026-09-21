@@ -73,11 +73,23 @@ type ParsedQuestion struct {
 
 // ParsedRequest is the validated form of a Request with canonical state.
 type ParsedRequest struct {
-	Model     string
-	StateRaw  json.RawMessage
-	State     any
+	Model    string
+	StateRaw json.RawMessage
+	State    any
+	// Images carries vision inputs declared in the state (VLM support):
+	// the top-level keys "image" (single string) and "images" (array of
+	// strings) of the state object. Only http(s):// and data:image/... URLs
+	// are accepted — local file paths would turn state into arbitrary file
+	// reads and are rejected.
+	Images    []string
 	Questions []*ParsedQuestion
 }
+
+// Image limits (documented; keep in sync with README).
+const (
+	MaxStateImages     = 8
+	MaxImageDataURLLen = 20 << 20 // encoded data: URL length cap
+)
 
 // UnmarshalJSON keeps raw criteria and validates nothing here; use Validate.
 func (q *Question) UnmarshalJSON(data []byte) error {
@@ -127,6 +139,14 @@ func ValidateRequest(req *Request) (*ParsedRequest, error) {
 			default:
 				fail("state", "state must be a string, object, or array")
 			}
+		}
+		// Vision inputs ride on the state object (VLM support).
+		if obj, ok := out.State.(map[string]any); ok {
+			images, imerr := extractImages(obj)
+			if imerr != nil {
+				fail("state", "%v", imerr)
+			}
+			out.Images = images
 		}
 	}
 

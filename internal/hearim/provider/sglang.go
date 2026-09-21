@@ -42,6 +42,7 @@ func NewSGLang(cfg config.ProviderConfig) *SGLangAdapter {
 		PrefixCache:         "radix",
 		ReportsCachedTokens: true,
 		MaxConcurrency:      cfg.Concurrency,
+		Vision:              true,
 	}
 	return a
 }
@@ -115,6 +116,7 @@ func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRe
 	} else if req.TopK > 0 {
 		body["top_logprobs_num"] = req.TopK
 	}
+	MergeExtras(body, ModelExtras(a.cfg, req.Model.Model))
 
 	var raw json.RawMessage
 	if err := a.hc.do(ctx, "POST", "/generate", body, &raw); err != nil {
@@ -217,6 +219,7 @@ func (a *SGLangAdapter) ScoreContinuations(ctx context.Context, req Continuation
 		if req.Model.Model != "" {
 			body["model"] = req.Model.Model
 		}
+		MergeExtras(body, ModelExtras(a.cfg, req.Model.Model))
 		var raw json.RawMessage
 		if err := a.hc.do(ctx, "POST", "/generate", body, &raw); err != nil {
 			return ContinuationScore{}, err

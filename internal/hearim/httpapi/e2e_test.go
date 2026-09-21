@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -417,5 +418,83 @@ func TestJevCandidatesExtension(t *testing.T) {
 	// The extension must forward the prompt bytes exactly.
 	if len(up.lastPrompts) == 0 || up.lastPrompts[len(up.lastPrompts)-1] != "...\nANSWER:" {
 		t.Errorf("prompt forwarded = %v", up.lastPrompts)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	up := &fakeUpstream{t: t}
+	upSrv := httptest.NewServer(up.handler())
+	defer upSrv.Close()
+	srv, handler := newTestServer(t, upSrv.URL, "")
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	defer srv.Shutdown(defaultCtx())
+
+	// One request to seed counters.
+	body := `{"model":"jev-gemma4","state":"s","questions":{"q":{"type":"noul"}}}`
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/systemone", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	if _, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	}
+
+	req2, _ := http.NewRequest("GET", ts.URL+"/metrics", nil)
+	req2.Header.Set("Authorization", "Bearer test-key")
+	resp, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d", resp.StatusCode)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	out := string(data)
+	for _, want := range []string{
+		"# TYPE hearim_requests_total counter",
+		`hearim_requests_total{path="/v1/systemone",status="200"} 1`,
+		"# TYPE hearim_request_duration_seconds histogram",
+		"# TYPE hearim_route_ready gauge",
+		"hearim_routes_ready 1",
+		"# TYPE hearim_budget_state gauge",
+		"go_goroutines",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+}
+
+func TestImageRequestGatedOnNonVisionRoute(t *testing.T) {
+	up := &fakeUpstream{t: t}
+	upSrv := httptest.NewServer(up.handler())
+	defer upSrv.Close()
+	srv, handler := newTestServer(t, upSrv.URL, "")
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+	defer srv.Shutdown(defaultCtx())
+
+	// The e2e config types qwen-less vLLM route without vision model entry;
+	// the adapter declares Vision true but the route is chat for Ollama...
+	// Here the route is vLLM completions (non-chat), so images must be 422.
+	body := `{"model":"jev-gemma4","state":{"note":"x","image":"https://x/a.png"},"questions":{"q":{"type":"noul"}}}`
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/systemone", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("image on non-vision route status = %d", resp.StatusCode)
+	}
+	var e struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	json.NewDecoder(resp.Body).Decode(&e)
+	if e.Error.Type != "validation_failed" {
+		t.Errorf("error type = %s", e.Error.Type)
 	}
 }

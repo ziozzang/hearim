@@ -262,11 +262,13 @@ func TestChatMessages(t *testing.T) {
 	if len(msgs) != 3 || msgs[0].Role != "system" || msgs[1].Role != "user" || msgs[2].Role != "user" {
 		t.Fatalf("messages = %+v", msgs)
 	}
-	if !strings.Contains(msgs[1].Content, "<state") {
-		t.Errorf("state message = %q", msgs[1].Content)
+	stateText, ok := msgs[1].Content.(string)
+	if !ok || !strings.Contains(stateText, "<state") {
+		t.Errorf("state message = %v", msgs[1].Content)
 	}
-	if !strings.Contains(msgs[2].Content, "<question") || strings.Contains(msgs[2].Content, "<answer-label>") {
-		t.Errorf("question message = %q", msgs[2].Content)
+	qText, ok := msgs[2].Content.(string)
+	if !ok || !strings.Contains(qText, "<question") || strings.Contains(qText, "<answer-label>") {
+		t.Errorf("question message = %v", msgs[2].Content)
 	}
 }
 

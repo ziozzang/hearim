@@ -11,6 +11,14 @@ OpenAI 호환 서버) 위에 TypeSafe AI **Jev**의 `POST /v1/systemone` 계약�
 next-token scoring 호출이며, 라벨 fast path가 불가능하면 라벨 또는 선택지
 전체를 teacher-forcing 한다.
 
+### 이름의 뜻
+
+**헤아림**은 동사 **헤아리다**의 명사형으로, 두 가지 얽힌 뜻을 갖는다:
+*(하나하나) 세다*, 그리고 *생각하여 이해하다·깨닫다*. 이 게이트웨이가 하는
+일이 정확히 그 겹침이다 — 이해하는 행위("이 state는 고객이 환불을 원한다는
+뜻인가?")를 세는 행위로 바꾼다. 한 디코드 위치에서 라벨 logprob를 측정해
+정규화한다. hearim은 세고, 호출자는 이해한다 — 정직한 숫자와 함께.
+
 > 기본 문서는 영어([README.md](README.md))이고, 이 파일은 전체 한국어 번역이다.
 
 ---
@@ -189,6 +197,7 @@ provider로 투명 프록시한다. hearim은 일반 대화 트래픽에서 Jev 
 - `GET /healthz` — 생존 확인
 - `GET /readyz` — ready한 레지스트리를 가진 기본 route가 없으면 실패
 - `GET /v1/routes` — route, 엔드포인트, 레지스트리, 캐시 계획
+- `GET /metrics` — Prometheus 텍스트 형식(인증 필요)
 
 ---
 
@@ -199,6 +208,7 @@ provider로 투명 프록시한다. hearim은 일반 대화 트래픽에서 Jev 
 | `hearim serve` | 게이트웨이 실행 |
 | `hearim probe` | Phase 0 capability suite: tokenizer endpoint, logprob 형태, 단일 토큰 라벨, teacher-forced parity, hidden reasoning·캐시 증거. JSON 보고서 출력, 모든 대상이 go/no-go 게이트에 실패하면 0이 아닌 종료 코드 |
 | `hearim bench` | 라벨된 JSONL 코퍼스 실행: 정확도, macro F1, NLL, Brier, ECE, candidate mass, p50/p95 지연, 라벨 순서 순열 분산(`-permutations N`) |
+| `hearim update` | GitHub 릴리즈에서 SHA256SUMS 검증 후 자가 업데이트 |
 
 bench 코퍼스 형식:
 
@@ -207,6 +217,70 @@ bench 코퍼스 형식:
 {"state": "...", "question": {"type": "noul", "criteria": {"true": "...", "false": "..."}}, "expected": true}
 {"state": "...", "question": {"type": "score", "criteria": ["low", "high"]}, "expected": 1}
 ```
+
+## 모델명 해석
+
+요청의 `model` 필드는 다음 순서로 해석된다:
+
+1. 설정된 alias(`model_aliases`) 또는 폴백 체인(`model_alias_chains`,
+   바인딩된 첫 route 사용)
+2. 명시적 `provider:model`(prefix가 설정된 provider 이름일 때)
+3. **bare 백엔드 모델명** — `"gemma4:31b"`는 그 모델을 서빙하는
+   provider로 해석된다. 여러 provider가 같은 이름을 서빙하면 명시적
+   오류로 알린다
+
+## 멀티 백엔드 설정
+
+- `providers[].base_urls` — 한 엔진의 엔드포인트 풀: 요청은 레플리카 간
+  round-robin되고 재시도는 *다음* 호스트로 장애조치되어, 죽은 레플리카를
+  제자리에서 재시도하지 않고 우회한다.
+- `model_alias_chains` — 순서 폴백: `{"resilient":
+  ["ollama-cloud:gemma4:31b", "vllm-local:google/gemma-4-31B-it"]}`.
+- `models` 항목은 업스트림 메타데이터를 담는다:
+
+```yaml
+models:
+  - gemma4:31b                          # 일반 항목
+  - name: qwen3:32b
+    type: thinking                      # reasoning을 완전히 끌 수 없음:
+                                        # chat exact 경로 거부(§3.4)
+  - name: llava:13b
+    type: vision                        # 이미지 입력 허용
+    extra_params: {num_ctx: 16384}      # 업스트림에 병합되는 추가 JSON
+```
+
+- `extra_params`(provider 또는 모델 수준, 키 충돌 시 모델이 우선)는 모든
+  업스트림 요청에 추가 JSON 필드를 병합한다 — `seed`, `num_ctx` 같은
+  엔진 고유 노브나 게이트웨이 전용 파라미터. 정확성에 중요한 필드
+  (`logprobs`, `max_tokens`, 샘플러 값 등)는 보호되어 덮어쓸 수 없다.
+
+## 비전(VLM) 이미지 입력
+
+state 객체는 최상위 `image`(단일 URL) 또는 `images`(배열)로 이미지를
+선언할 수 있다. `https?://`와 `data:image/...` URL만 허용한다 — bare
+경로와 다른 스킴은 검증 단계에서 거부된다(state는 데이터이지 로컬 파일을
+읽는 권한이 아니다). 최대 8장, data URL 20MB. 비전 가능 chat 경로에서는
+state 메시지가 OpenAI 멀티모달 콘텐츠 파트(`image_url`)로 변환되고,
+비전이 아닌 경로는 이미지 포함 state를 422로 거부한다.
+
+## 관측
+
+- `GET /metrics` — Prometheus 텍스트 형식(API와 동일한 인증 뒤에 있음):
+  요청 카운터·지연 히스토그램, scoring 방법·확률 공간별 질문 호출,
+  input/output/cached-reported로 분리된 토큰 카운터, route별
+  `hearim_prefill_cache_ratio`(*보고된* 캐시 토큰만으로 계산 — §8.5),
+  예산 사용률, route readiness 게이지, 기본 Go 런타임 게이지.
+- 응답 헤더 `x-jev-cached-input-tokens`는 서버가 보고한 이 요청의 캐시
+  토큰 수를, `x-jev-cache-plan`은 엔진의 캐시 전략을 전달한다.
+
+## 자동 업데이트
+
+`hearim update`는 실행 중인 바이너리를 GitHub 릴리즈 빌드로 교체하며,
+릴리즈의 `SHA256SUMS` 에셋에 기록된 SHA-256을 먼저 검증한다(설계는
+[hftools](https://github.com/ziozzang/hftools)를 따름). `update -check`는
+확인만, `-version v0.2.0`은 특정 릴리즈 고정, `-force`는 재설치.
+대화형 실행에서는 새 릴리즈가 있으면 1일 1회 업데이트 알림을 출력한다 —
+`HEARIM_NO_UPDATE_CHECK=1`로 끌 수 있다.
 
 ## 모델 라우팅과 비용
 
@@ -254,6 +328,8 @@ go vet ./...
 | `httpapi` | 서버 조립, 핸들러, 프록시, 헬스 |
 | `probe` | Phase 0 capability suite |
 | `bench` | §12.3 벤치마크 실행기 |
+| `selfupdate` | SHA256SUMS 검증 기반 GitHub 릴리즈 자가 업데이트와 백그라운드 알림 |
+| `metrics` | 최소 Prometheus 텍스트 노출 레지스트리(stdlib만) |
 
 ## 실측 capability (2026-09-21, 실제 백엔드)
 

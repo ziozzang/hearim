@@ -34,8 +34,13 @@ providers:
     engine: ollama
     base_url: https://ollama.com/v1
     api_key: ${OLLAMA_API_KEY}
-    models: ["gemma4:31b", "deepseek-v4.1-flash", "gpt-oss:20b"]
+    models:
+      - gemma4:31b
+      - deepseek-v4.1-flash
+      - name: gpt-oss:20b
+        type: thinking          # low/medium/high only on Ollama: no exact chat route
     endpoint_preference: [completions, chat_completions]
+    extra_params: {}            # additional JSON merged into upstream requests
 
   - id: llama-cpp-local
     engine: llama.cpp
@@ -45,8 +50,14 @@ providers:
 
   - id: vllm-local
     engine: vllm
+    # base_urls: an endpoint pool — round-robin with retry failover
+    # base_urls: ["http://vllm-a:8000", "http://vllm-b:8000"]
     base_url: http://vllm:8000
-    models: ["google/gemma-4-31B-it"]
+    models:
+      - google/gemma-4-31B-it
+      - name: llava-1.6-34b
+        type: vision            # VLM: state image/images become image_url parts
+        extra_params: {max_model_len: 16384}
     endpoint_preference: [completions, chat_completions]
     selected_token_field: logprob_token_ids
     prefix_caching: automatic
@@ -64,6 +75,10 @@ model_aliases:
   jev-deepseek-flash: ollama-cloud:deepseek-v4.1-flash
   jev-gpt-oss-20b: ollama-cloud:gpt-oss:20b
   jev-vllm: vllm-local:google/gemma-4-31B-it
+  # Bare backend model names also resolve to their serving provider, e.g.
+  # "gemma4:31b". Ordered fallback chains:
+model_alias_chains:
+  resilient: ["vllm-local:google/gemma-4-31B-it", "ollama-cloud:gemma4:31b"]
 
 backend_policy:
   endpoint_preference:

@@ -26,6 +26,9 @@ type Route struct {
 	Endpoint     config.EndpointKind
 	Pricing      *config.RouteCandidate
 	CachePlan    string
+	// ModelCfg carries the configured upstream LLM type (chat|thinking|
+	// vision) and per-model extra parameters.
+	ModelCfg *config.ModelConfig
 }
 
 // QuestionResult carries one question's answer plus diagnostics.
@@ -53,6 +56,9 @@ type Meta struct {
 	ProbabilitySpaces   []string
 	CalibrationProfiles []string
 	TotalCandidateMass  float64
+	// TotalCachedTokens is the sum of server-REPORTED cached input tokens
+	// across questions (§8.5: reported only, never estimated).
+	TotalCachedTokens int64
 }
 
 // Evaluator executes compiled plans against a route.
@@ -82,6 +88,22 @@ func New(c *compile.Compiler, cfg *config.Config) *Evaluator {
 func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.EvaluationPlan, qi int, route Route) (*QuestionResult, error) {
 	q := plan.Questions[qi]
 	caps := route.Adapter.Capabilities()
+
+	// Vision gate: image-bearing states need a route that accepts
+	// image_url content parts. Raw completion paths cannot carry them, and
+	// a model explicitly typed chat/thinking is not a VLM.
+	if len(plan.Images) > 0 {
+		modelType := ""
+		if route.ModelCfg != nil {
+			modelType = route.ModelCfg.Type
+		}
+		visionModel := modelType == "" || modelType == "vision"
+		if !caps.Vision || route.Endpoint != config.EndpointChatCompletion || !visionModel {
+			return nil, jev.NewError(jev.CodeValidationFailed,
+				"state declares %d image(s); model %s (type %q) is not on a vision-capable chat route (endpoint %s)",
+				len(plan.Images), route.BackendModel, orDefault(modelType, "chat"), route.Endpoint)
+		}
+	}
 
 	if route.Registry == nil {
 		return nil, jev.NewQuestionError(jev.CodeBackendProbabilityUnavailable, q.ID,
@@ -353,6 +375,13 @@ func supportsConstrainedVocab(caps provider.ProviderCapabilities) bool {
 	return false
 }
 
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
 func labelTexts(q *compile.CompiledQuestion) []string {
 	out := make([]string, 0, len(q.Candidates))
 	for _, c := range q.Candidates {
@@ -431,6 +460,7 @@ func MetaFrom(route Route, results []*QuestionResult, cfg *config.Config) Meta {
 			seenProf[r.ProfileID] = true
 		}
 		m.TotalCandidateMass += r.CandidateMass
+		m.TotalCachedTokens += r.CachedTokens
 	}
 	sort.Strings(m.ScoringMethods)
 	return m

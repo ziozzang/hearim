@@ -69,6 +69,10 @@ type Config struct {
 	Router        RouterConfig        `yaml:"router" json:"router"`
 	Budget        BudgetConfig        `yaml:"budget" json:"budget"`
 	ModelAliases  map[string]string   `yaml:"model_aliases" json:"model_aliases"`
+	// ModelAliasChains map an alias to an ordered fallback list of
+	// provider:model targets (or "policy:..." references); resolution walks
+	// the chain and uses the first healthy route.
+	ModelAliasChains map[string][]string `yaml:"model_alias_chains" json:"model_alias_chains"`
 }
 
 // GatewayConfig controls the public Jev-compatible surface. See TODO.md §3.1.
@@ -117,11 +121,19 @@ type OllamaDefaults struct {
 }
 
 type ProviderConfig struct {
-	ID                 string         `yaml:"id" json:"id"`
-	Engine             EngineKind     `yaml:"engine" json:"engine"`
-	BaseURL            string         `yaml:"base_url" json:"base_url"`
-	APIKey             string         `yaml:"api_key" json:"api_key"`
-	Models             []string       `yaml:"models" json:"models"`
+	ID      string     `yaml:"id" json:"id"`
+	Engine  EngineKind `yaml:"engine" json:"engine"`
+	BaseURL string     `yaml:"base_url" json:"base_url"`
+	// BaseURLs is an endpoint pool for the same engine: requests rotate
+	// across hosts and fail over on transport errors and retriable statuses.
+	BaseURLs []string     `yaml:"base_urls" json:"base_urls"`
+	APIKey   string       `yaml:"api_key" json:"api_key"`
+	Models   ModelConfigs `yaml:"models" json:"models"`
+	// ExtraParams are additional JSON fields merged into every upstream
+	// request for this provider (model-level extra_params win per key).
+	// hearim's correctness-critical fields (logprobs, max_tokens, ...) are
+	// protected and cannot be overridden.
+	ExtraParams        map[string]any `yaml:"extra_params" json:"extra_params"`
 	EndpointPreference []EndpointKind `yaml:"endpoint_preference" json:"endpoint_preference"`
 	Concurrency        int            `yaml:"concurrency" json:"concurrency"`
 	RequestTimeout     time.Duration  `yaml:"request_timeout" json:"request_timeout"`
@@ -138,6 +150,79 @@ type ProviderConfig struct {
 	MaxTopLogprobs int `yaml:"max_top_logprobs" json:"max_top_logprobs"`
 	// HealthPath overrides the health probe path.
 	HealthPath string `yaml:"health_path" json:"health_path"`
+}
+
+// ModelConfig is one upstream model with optional metadata. Type declares
+// the upstream LLM type and steers routing:
+//
+//	chat    - plain instruct model (default when unset)
+//	thinking / reasoning - reasoning traces cannot be fully disabled, so
+//	                      chat exact routes are vetoed for it (TODO.md §3.4)
+//	vision  - accepts image inputs
+type ModelConfig struct {
+	Name        string         `yaml:"name" json:"name"`
+	Type        string         `yaml:"type" json:"type,omitempty"`
+	ExtraParams map[string]any `yaml:"extra_params" json:"extra_params,omitempty"`
+}
+
+// ModelConfigs accepts either a plain string list (backward compatible) or
+// a list of model entries.
+type ModelConfigs []ModelConfig
+
+// UnmarshalYAML accepts scalars ("model-name") and mappings (name/type/
+// extra_params) inside a models: sequence.
+func (m *ModelConfigs) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("config: models must be a list")
+	}
+	out := make(ModelConfigs, 0, len(node.Content))
+	for _, item := range node.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			var name string
+			if err := item.Decode(&name); err != nil {
+				return err
+			}
+			out = append(out, ModelConfig{Name: name})
+		case yaml.MappingNode:
+			var mc ModelConfig
+			if err := item.Decode(&mc); err != nil {
+				return err
+			}
+			if mc.Name == "" {
+				return fmt.Errorf("config: model entry requires a name")
+			}
+			switch mc.Type {
+			case "", "chat", "thinking", "reasoning", "vision":
+			default:
+				return fmt.Errorf("config: model %q: unknown type %q (chat|thinking|vision)", mc.Name, mc.Type)
+			}
+			out = append(out, mc)
+		default:
+			return fmt.Errorf("config: models entries must be strings or mappings")
+		}
+	}
+	*m = out
+	return nil
+}
+
+// Names returns just the model names.
+func (m ModelConfigs) Names() []string {
+	out := make([]string, 0, len(m))
+	for _, mc := range m {
+		out = append(out, mc.Name)
+	}
+	return out
+}
+
+// Find returns the entry for a model name, or nil.
+func (m ModelConfigs) Find(name string) *ModelConfig {
+	for i := range m {
+		if m[i].Name == name {
+			return &m[i]
+		}
+	}
+	return nil
 }
 
 type BackendPolicyConfig struct {
@@ -508,8 +593,13 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("config: provider %q: unknown engine %q", p.ID, p.Engine)
 		}
-		if p.BaseURL == "" {
-			return fmt.Errorf("config: provider %q: base_url is required", p.ID)
+		if p.BaseURL == "" && len(p.BaseURLs) == 0 {
+			return fmt.Errorf("config: provider %q: base_url or base_urls is required", p.ID)
+		}
+		for _, u := range p.BaseURLs {
+			if u == "" {
+				return fmt.Errorf("config: provider %q: empty entry in base_urls", p.ID)
+			}
 		}
 		if p.Concurrency < 1 {
 			return fmt.Errorf("config: provider %q: concurrency must be >= 1", p.ID)
@@ -525,6 +615,23 @@ func (c *Config) Validate() error {
 		parts := strings.SplitN(target, ":", 2)
 		if !seen[parts[0]] {
 			return fmt.Errorf("config: model_alias %q references unknown provider %q", alias, parts[0])
+		}
+	}
+	for alias, chain := range c.ModelAliasChains {
+		if len(chain) == 0 {
+			return fmt.Errorf("config: model_alias_chains %q is empty", alias)
+		}
+		for _, target := range chain {
+			if strings.HasPrefix(target, "policy:") {
+				continue
+			}
+			if !strings.Contains(target, ":") {
+				return fmt.Errorf("config: model_alias_chains %q entry %q must use provider:model syntax", alias, target)
+			}
+			parts := strings.SplitN(target, ":", 2)
+			if !seen[parts[0]] {
+				return fmt.Errorf("config: model_alias_chains %q references unknown provider %q", alias, parts[0])
+			}
 		}
 	}
 	if c.Compiler.Temperature <= 0 || c.Compiler.TopP <= 0 || c.Compiler.TopP > 1 {

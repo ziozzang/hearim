@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"hearim/internal/hearim/config"
@@ -60,19 +61,62 @@ type httpClient struct {
 	apiKey   string
 	client   *http.Client
 	maxRetry int
+	roots    []*url.URL
+	rr       uint64
 }
 
 func newHTTPClient(cfg config.ProviderConfig) *httpClient {
-	base, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/"))
-	if err != nil {
-		base = &url.URL{Scheme: "http", Host: "invalid"}
+	// Endpoint pool: base_url first, then any base_urls entries (deduped).
+	// With a pool, retries rotate to the next host, so a dead replica is
+	// bypassed instead of retried in place.
+	candidates := make([]string, 0, 1+len(cfg.BaseURLs))
+	if cfg.BaseURL != "" {
+		candidates = append(candidates, cfg.BaseURL)
+	}
+	candidates = append(candidates, cfg.BaseURLs...)
+	seen := map[string]bool{}
+	var roots []*url.URL
+	for _, raw := range candidates {
+		u := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		parsed, err := url.Parse(u)
+		if err != nil || parsed.Host == "" {
+			continue
+		}
+		roots = append(roots, parsed)
+	}
+	if len(roots) == 0 {
+		roots = []*url.URL{{Scheme: "http", Host: "invalid"}}
 	}
 	return &httpClient{
-		base:     base,
+		base:     roots[0],
+		roots:    roots,
 		apiKey:   cfg.APIKey,
 		client:   &http.Client{Timeout: cfg.RequestTimeout},
 		maxRetry: cfg.MaxRetries,
 	}
+}
+
+// nextRootIdx advances the round-robin once per request so consecutive
+// requests spread over replicas.
+func (c *httpClient) nextRootIdx() int {
+	if len(c.roots) == 1 {
+		return 0
+	}
+	return int(atomic.AddUint64(&c.rr, 1)-1) % len(c.roots)
+}
+
+// rootAt returns the endpoint for a request's attempt n: attempt 0 uses the
+// round-robin start, each retry moves to the NEXT replica, so a dead host
+// is failed over instead of retried in place.
+func (c *httpClient) rootAt(start, attempt int) *url.URL {
+	if len(c.roots) == 1 {
+		return c.roots[0]
+	}
+	return c.roots[(start+attempt)%len(c.roots)]
 }
 
 // do issues a request; out (when non-nil) receives the decoded JSON body.
@@ -88,6 +132,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 	}
 
 	attempts := c.maxRetry + 1
+	start := c.nextRootIdx()
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
@@ -100,7 +145,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 			case <-time.After(backoff + jitter):
 			}
 		}
-		req, err := c.newRequest(ctx, method, path, payload)
+		req, err := c.newRequest(ctx, method, path, payload, c.rootAt(start, attempt))
 		if err != nil {
 			return err
 		}
@@ -134,8 +179,8 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 	return lastErr
 }
 
-func (c *httpClient) newRequest(ctx context.Context, method, path string, payload []byte) (*http.Request, error) {
-	u := c.joinURL(path)
+func (c *httpClient) newRequest(ctx context.Context, method, path string, payload []byte, root *url.URL) (*http.Request, error) {
+	u := joinURL(root, path)
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -149,7 +194,7 @@ func (c *httpClient) newRequest(ctx context.Context, method, path string, payloa
 	return req, nil
 }
 
-// joinURL resolves an endpoint path against the configured base URL.
+// joinURL resolves an endpoint path against a base URL.
 //
 // Base URLs are configured either as a server root (http://host:8000) or as
 // an OpenAI-style root ending in /v1 (https://ollama.com/v1). Both OpenAI
@@ -157,8 +202,8 @@ func (c *httpClient) newRequest(ctx context.Context, method, path string, payloa
 // /completion, /tokenize) hang off the server root, so a trailing "/v1" in
 // the base is stripped before joining — otherwise it duplicates
 // (/v1/v1/completions) or misplaces native endpoints (/v1/api/version).
-func (c *httpClient) joinURL(path string) string {
-	root := *c.base
+func joinURL(base *url.URL, path string) string {
+	root := *base
 	root.Path = strings.TrimSuffix(strings.TrimRight(root.Path, "/"), "/v1")
 	if root.Path == "" {
 		root.Path = "/"
@@ -185,7 +230,7 @@ func (c *httpClient) doRaw(ctx context.Context, method, path string, body any) (
 		}
 		payload = b
 	}
-	req, err := c.newRequest(ctx, method, path, payload)
+	req, err := c.newRequest(ctx, method, path, payload, c.rootAt(c.nextRootIdx(), 0))
 	if err != nil {
 		return 0, nil, err
 	}

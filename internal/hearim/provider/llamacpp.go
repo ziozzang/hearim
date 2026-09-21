@@ -138,6 +138,7 @@ func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScore
 		method = "constrained-vocab"
 		space = SpacePostMask
 	}
+	MergeExtras(body, ModelExtras(a.cfg, req.Model.Model))
 
 	var out struct {
 		CompletionProbabilities []struct {

@@ -64,6 +64,10 @@ type EvaluationPlan struct {
 	// Delimiter sits between the answer marker and the label token; the
 	// registry probes delimiter candidates and records the adopted one.
 	Delimiter string
+	// Images are the VLM inputs declared by the state (http(s) or data:
+	// URLs). They travel as chat content parts on vision routes; raw
+	// completion routes reject image-bearing states.
+	Images []string
 }
 
 // Compiler compiles validated requests into evaluation plans.
@@ -102,6 +106,7 @@ func (c *Compiler) Compile(pr *jev.ParsedRequest, backendModel string) (*Evaluat
 		TemplateVersion: c.Config.TemplateVersion,
 		Layout:          layout,
 		Delimiter:       defaultDelimiter(c.Config.DelimiterCandidates),
+		Images:          pr.Images,
 	}
 
 	for _, q := range pr.Questions {

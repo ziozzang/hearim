@@ -117,6 +117,12 @@ func (s *Server) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 		agg.OutputTokens += res.OutputTokens
 		agg.ReportedCachedTokens += res.CachedTokens
 		agg.UpstreamCalls++
+		s.recordQuestionMetrics(route.BackendModel, route.ProviderID,
+			res.ScoringMethod, res.ProbabilitySpace, usage.Aggregate{
+				InputTokens:          res.InputTokens,
+				OutputTokens:         res.OutputTokens,
+				ReportedCachedTokens: res.CachedTokens,
+			})
 	}
 
 	resp := &jev.Response{
@@ -172,6 +178,10 @@ func setDiagnostics(w http.ResponseWriter, m eval.Meta) {
 	}
 	if len(m.CalibrationProfiles) > 0 {
 		h.Set("x-jev-calibration-profile", strings.Join(m.CalibrationProfiles, ","))
+	}
+	if m.TotalCachedTokens > 0 {
+		// §8.5: cached token counts the upstream reported for this request.
+		h.Set("x-jev-cached-input-tokens", strconv.FormatInt(m.TotalCachedTokens, 10))
 	}
 }
 

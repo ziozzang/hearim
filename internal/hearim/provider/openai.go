@@ -254,7 +254,7 @@ func matchByText(entries []openaiLogprobEntry, text string) (float64, bool) {
 // servers. selectedField ("logprob_token_ids"/... ) enables direct ID
 // requests when the server supports it; otherwise top-K is used.
 func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScoreRequest,
-	model string, selectedField string) (*NextTokenScoreResult, error) {
+	model string, selectedField string, extras map[string]any) (*NextTokenScoreResult, error) {
 
 	body := openaiCompletionsRequest{
 		Model:       model,
@@ -288,6 +288,11 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 			body.Extra["allowed_token_ids"] = req.CandidateTokenIDs
 			space = SpacePostMask
 			method = "constrained-vocab"
+		}
+	}
+	for k, v := range extras {
+		if !protectedFields[k] {
+			body.Extra[k] = v
 		}
 	}
 
@@ -360,7 +365,7 @@ type openaiChatResponse struct {
 // scoreViaChat is the chat-completions scoring path for chat-only backends
 // (TODO.md §3.4, §5.1 chat variant). The first visible assistant token's
 // top_logprobs restore the candidate distribution.
-func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest, model string) (*NextTokenScoreResult, error) {
+func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest, model string, extras map[string]any) (*NextTokenScoreResult, error) {
 	msgs := req.ChatMessages
 	if len(msgs) == 0 && req.PromptText != "" {
 		msgs = compile.PromptToMessages(req.PromptText)
@@ -386,6 +391,11 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 	if req.NoReasoning {
 		// Ollama native-style boolean control; harmless where ignored.
 		body.Extra["think"] = false
+	}
+	for k, v := range extras {
+		if !protectedFields[k] {
+			body.Extra[k] = v
+		}
 	}
 	var out openaiChatResponse
 	if err := hc.do(ctx, "POST", "/v1/chat/completions", body, &out); err != nil {

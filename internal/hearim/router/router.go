@@ -6,6 +6,7 @@ package router
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"hearim/internal/hearim/config"
@@ -28,7 +29,8 @@ func New(cfg *config.Config) *Router {
 
 // Resolve maps a public model name to a route. Aliases come from config;
 // "provider:model" strings resolve directly; "policy:auto-v1" selects the
-// auto cost policy of TODO.md §9.
+// auto cost policy of TODO.md §9; chains (model_alias_chains) resolve to the
+// first bound route in order.
 func (r *Router) Resolve(publicModel string) (eval.Route, error) {
 	if publicModel == "" {
 		publicModel = r.cfg.Gateway.DefaultModel
@@ -40,29 +42,105 @@ func (r *Router) Resolve(publicModel string) (eval.Route, error) {
 	}
 	r.mu.RUnlock()
 
-	target, ok := r.cfg.ModelAliases[publicModel]
-	if !ok {
-		if isProviderModelRef(publicModel) {
-			target = publicModel
-		} else {
-			return eval.Route{}, fmt.Errorf("router: unknown model %q", publicModel)
-		}
-	}
-
-	if target == "policy:auto-v1" {
-		target = r.autoTarget()
-	}
-
-	providerID, model := splitProviderModel(target)
-	for _, route := range r.All() {
-		if route.ProviderID == providerID && route.BackendModel == model {
+	// Fallback chain: first bound route wins; healthy-route preference is
+	// applied by the caller (readiness gates the binding itself).
+	if chain, ok := r.cfg.ModelAliasChains[publicModel]; ok && len(chain) > 0 {
+		var lastErr error
+		for _, target := range chain {
+			route, err := r.resolveTarget(target)
+			if err != nil {
+				lastErr = err
+				continue
+			}
 			r.mu.Lock()
 			r.routes[publicModel] = route
 			r.mu.Unlock()
 			return route, nil
 		}
+		if lastErr != nil {
+			return eval.Route{}, fmt.Errorf("router: no route in chain for %s: %w", publicModel, lastErr)
+		}
+		return eval.Route{}, fmt.Errorf("router: empty chain resolution for %s", publicModel)
 	}
-	return eval.Route{}, fmt.Errorf("router: no route for %s (%s)", publicModel, target)
+
+	target, ok := r.cfg.ModelAliases[publicModel]
+	if !ok {
+		// "provider:model" only when the prefix names a configured provider;
+		// bare backend model names (which often contain colons, like
+		// "gemma4:31b") resolve to the provider that serves them.
+		if pid, model, isRef := splitProviderModelOK(publicModel); isRef && r.hasProvider(pid) {
+			return r.resolveTarget(pid + ":" + model)
+		}
+		return r.resolveTarget(":" + publicModel) // bare-name lookup
+	}
+	return r.resolveTarget(target)
+}
+
+// hasProvider reports whether a provider id is configured.
+func (r *Router) hasProvider(id string) bool {
+	for _, p := range r.cfg.Providers {
+		if p.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveTarget resolves one "provider:model" or "policy:*" target to a
+// bound route.
+func (r *Router) resolveTarget(target string) (eval.Route, error) {
+	if strings.HasPrefix(target, "policy:") {
+		model, ok := r.AutoTarget(target)
+		if !ok {
+			return eval.Route{}, fmt.Errorf("router: policy %q found no gated candidate", target)
+		}
+		target = model
+		// Fall through with a bare model name; pin via candidates first.
+		if pid := r.providerPin(model); pid != "" {
+			target = pid + ":" + model
+		}
+	}
+	providerID, model := splitProviderModel(target)
+	for _, route := range r.All() {
+		if route.ProviderID == providerID && route.BackendModel == model {
+			return route, nil
+		}
+	}
+	if providerID == "" {
+		// Bare model name: resolve to the provider serving it. Ambiguity
+		// across providers is an error listing the candidates.
+		var providers []string
+		for _, p := range r.cfg.Providers {
+			if p.Models.Find(model) != nil {
+				providers = append(providers, p.ID)
+			}
+		}
+		if len(providers) == 1 {
+			return r.resolveTarget(providers[0] + ":" + model)
+		}
+		if len(providers) > 1 {
+			return eval.Route{}, fmt.Errorf("router: model %q served by multiple providers %v; use provider:model", model, providers)
+		}
+	}
+	return eval.Route{}, fmt.Errorf("router: no route for %s", target)
+}
+
+// providerPin finds a configured provider pin for a model.
+func (r *Router) providerPin(model string) string {
+	for _, c := range r.cfg.Router.Candidates {
+		if c.Model == model && c.Provider != "" {
+			return c.Provider
+		}
+	}
+	for _, p := range r.cfg.Providers {
+		if p.Models.Find(model) != nil {
+			return p.ID
+		}
+	}
+	if len(r.cfg.Providers) == 1 {
+		return r.cfg.Providers[0].ID
+	}
+	return ""
 }
 
 func isProviderModelRef(s string) bool {

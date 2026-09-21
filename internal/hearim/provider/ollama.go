@@ -50,6 +50,8 @@ func NewOllama(cfg config.ProviderConfig) *OllamaAdapter {
 		PrefixCache:         "automatic",
 		ReportsCachedTokens: true,
 		MaxConcurrency:      cfg.Concurrency,
+		// Ollama's chat compat accepts image_url parts for vision models.
+		Vision: true,
 	}
 	return a
 }
@@ -79,7 +81,7 @@ func (a *OllamaAdapter) Tokenize(ctx context.Context, model, text string) ([]int
 
 func (a *OllamaAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
 	// Chat is the verified logprob surface; raw completions returns none.
-	return scoreViaChat(ctx, a.hc, req, req.Model.Model)
+	return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model))
 }
 
 // ScoreContinuations: the OpenAI-compatible surface exposes no prompt-token
@@ -124,6 +126,7 @@ func NewGeneric(cfg config.ProviderConfig) *GenericAdapter {
 		MaxTopLogprobs:   maxTop,
 		PrefixCache:      "unknown",
 		MaxConcurrency:   cfg.Concurrency,
+		Vision:           true,
 	}
 	return a
 }
@@ -149,7 +152,7 @@ func (a *GenericAdapter) Tokenize(ctx context.Context, model, text string) ([]in
 }
 
 func (a *GenericAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
-	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "")
+	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "", ModelExtras(a.cfg, req.Model.Model))
 }
 
 func (a *GenericAdapter) ScoreContinuations(ctx context.Context, req ContinuationScoreRequest) (*ContinuationScoreResult, error) {

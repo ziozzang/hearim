@@ -108,3 +108,47 @@ func TestBreakEvenDocValue(t *testing.T) {
 		t.Error("flash should win above break-even")
 	}
 }
+
+func TestBareModelNameResolution(t *testing.T) {
+	// Backend model names contain colons ("gemma4:31b"); they must resolve
+	// to the serving provider, not be misread as provider "gemma4".
+	r := New(baseConfig(t))
+	r.Bind("gemma4:31b", eval.Route{ProviderID: "p1", BackendModel: "gemma4:31b"})
+	route, err := r.Resolve("gemma4:31b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.ProviderID != "p1" {
+		t.Errorf("route = %+v", route)
+	}
+
+	// Ambiguity across providers is an explicit error.
+	r2 := New(baseConfig(t))
+	r2.Bind("a", eval.Route{ProviderID: "p1", BackendModel: "m"})
+	r2.Bind("b", eval.Route{ProviderID: "p2", BackendModel: "m"})
+	if _, err := r2.Resolve("m"); err == nil {
+		t.Error("ambiguous bare model should error")
+	}
+}
+
+func TestModelAliasChainFallback(t *testing.T) {
+	cfg := baseConfig(t)
+	cfg.ModelAliasChains = map[string][]string{
+		"resilient": {"p1:gemma4:31b", "p2:deepseek-v4.1-flash"},
+	}
+	r := New(cfg)
+	// Only the second hop is bound: the first must be skipped.
+	r.Bind("p2:deepseek-v4.1-flash", eval.Route{ProviderID: "p2", BackendModel: "deepseek-v4.1-flash"})
+	route, err := r.Resolve("resilient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route.ProviderID != "p2" {
+		t.Errorf("chain did not fall through: %+v", route)
+	}
+	// Cached binding is stable afterward.
+	route2, err := r.Resolve("resilient")
+	if err != nil || route2.ProviderID != "p2" {
+		t.Errorf("second resolve = %+v %v", route2, err)
+	}
+}

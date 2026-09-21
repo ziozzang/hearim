@@ -47,6 +47,9 @@ type ProviderCapabilities struct {
 	PrefixCache         string
 	ReportsCachedTokens bool
 	MaxConcurrency      int
+	// Vision: the endpoint accepts OpenAI-style image_url content parts,
+	// so image-bearing states can be evaluated by VLM models.
+	Vision bool
 }
 
 // SupportsSelectedTokenIDs reports the direct candidate-ID logprob path.

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 )
 
 func newBytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }
@@ -48,6 +50,77 @@ func sortedKeys(m map[string]*string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// extractImages pulls VLM image references out of a state object. Only the
+// documented top-level "image" / "images" keys are read; values must be
+// http(s):// or data:image/... URLs. file:// and bare paths are rejected —
+// state is data, not a license to read arbitrary local files.
+func extractImages(obj map[string]any) ([]string, error) {
+	var raw []string
+	if v, ok := obj["image"]; ok && v != nil {
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("state.image must be a string URL")
+		}
+		raw = append(raw, s)
+	}
+	if v, ok := obj["images"]; ok && v != nil {
+		arr, ok := v.([]any)
+		if !ok {
+			return nil, fmt.Errorf("state.images must be an array of URL strings")
+		}
+		for _, e := range arr {
+			s, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("state.images entries must be URL strings")
+			}
+			raw = append(raw, s)
+		}
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > MaxStateImages {
+		return nil, fmt.Errorf("state declares %d images; limit is %d", len(raw), MaxStateImages)
+	}
+	out := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, u := range raw {
+		if !validImageRef(u) {
+			return nil, fmt.Errorf("image reference must be an https?:// or data:image/... URL")
+		}
+		if seen[u] {
+			continue
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+func validImageRef(u string) bool {
+	if strings.HasPrefix(u, "data:image/") {
+		if len(u) > MaxImageDataURLLen {
+			return false
+		}
+		// data:image/<subtype>[;base64],<payload>
+		rest := u[len("data:image/"):]
+		semi := strings.Index(rest, ";")
+		comma := strings.Index(rest, ",")
+		if comma < 0 {
+			return false
+		}
+		if semi >= 0 && semi > comma {
+			return false
+		}
+		return true
+	}
+	parsed, err := url.Parse(u)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
 // ErrorCode identifies a Jev-compatible error type (TODO.md §10).

@@ -45,6 +45,7 @@ func NewVLLM(cfg config.ProviderConfig) *VLLMAdapter {
 		PrefixCache:         "automatic",
 		ReportsCachedTokens: true,
 		MaxConcurrency:      cfg.Concurrency,
+		Vision:              true,
 	}
 	return a
 }
@@ -74,7 +75,7 @@ func (a *VLLMAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequ
 	if field == "" {
 		field = "logprob_token_ids"
 	}
-	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, field)
+	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, field, ModelExtras(a.cfg, req.Model.Model))
 }
 
 // ScoreContinuations teacher-forces prefix+continuation with prompt_logprobs

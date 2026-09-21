@@ -16,6 +16,7 @@ import (
 	"hearim/internal/hearim/config"
 	"hearim/internal/hearim/eval"
 	"hearim/internal/hearim/jev"
+	"hearim/internal/hearim/metrics"
 	"hearim/internal/hearim/provider"
 	"hearim/internal/hearim/registry"
 	"hearim/internal/hearim/router"
@@ -35,6 +36,7 @@ type Server struct {
 	Ledger     *usage.Ledger
 	Logger     *slog.Logger
 	APIKeys    map[string]bool
+	Metrics    *metrics.Registry
 
 	routesMu    sync.RWMutex
 	routes      []eval.Route    // unique provider:model routes
@@ -56,6 +58,7 @@ func New(cfg *config.Config, logger *slog.Logger, registryDir string) (*Server, 
 		Budget:      usage.NewBudget(cfg.Budget),
 		Ledger:      usage.NewLedger(),
 		Logger:      logger,
+		Metrics:     metrics.New(),
 		ready:       map[string]bool{},
 		registryDir: registryDir,
 	}
@@ -81,13 +84,23 @@ func New(cfg *config.Config, logger *slog.Logger, registryDir string) (*Server, 
 		s.Schedulers[pc.ID] = schedule.New(pc.Concurrency, 10*time.Millisecond)
 	}
 
-	// Enumerate unique alias targets and bind routes.
+	// Enumerate unique alias targets and bind routes. Chain entries
+	// (model_alias_chains) contribute their targets so every hop has a
+	// registry-backed route before it can serve as a fallback.
 	targets := map[string][]string{} // target -> aliases
 	for alias, target := range cfg.ModelAliases {
 		if strings.HasPrefix(target, "policy:") {
 			continue
 		}
 		targets[target] = append(targets[target], alias)
+	}
+	for alias, chain := range cfg.ModelAliasChains {
+		for _, target := range chain {
+			if strings.HasPrefix(target, "policy:") {
+				continue
+			}
+			targets[target] = append(targets[target], alias)
+		}
 	}
 	for target, aliases := range targets {
 		route, err := s.buildRoute(context.Background(), target)
@@ -148,10 +161,8 @@ func (s *Server) providerForModel(model string) string {
 		}
 	}
 	for _, p := range s.Cfg.Providers {
-		for _, m := range p.Models {
-			if m == model {
-				return p.ID
-			}
+		if p.Models.Find(model) != nil {
+			return p.ID
 		}
 	}
 	if len(s.Cfg.Providers) == 1 {
@@ -185,10 +196,34 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 		Endpoint:     firstPreferred(pcfg.EndpointPreference),
 		CachePlan:    pcfg.PrefixCaching,
 	}
+	// Model entry: upstream type (chat|thinking|vision) and per-model
+	// extra parameters.
+	modelCfg := pcfg.Models.Find(model)
+	route.ModelCfg = modelCfg
+
 	// Mark verified endpoints from the static capabilities; real verification
 	// happens in `hearim probe` and updates capabilities.
 	if e, err := provider.ResolveExactRoute(adpt.Capabilities(), s.Cfg.BackendPolicy); err == nil {
 		route.Endpoint = e.Kind
+	}
+	// §3.4 veto: a model whose reasoning cannot be fully disabled has no
+	// exact chat route; it must use a verified completion-style endpoint.
+	if provider.ModelIsThinking(modelCfg) && route.Endpoint == config.EndpointChatCompletion {
+		alt := config.EndpointKind("")
+		for _, e := range adpt.Capabilities().Endpoints {
+			if (e.Kind == config.EndpointCompletions || e.Kind == config.EndpointNativeGenerate) &&
+				e.NextTokenLogprobsVerified {
+				alt = e.Kind
+				break
+			}
+		}
+		if alt == "" {
+			return eval.Route{}, fmt.Errorf(
+				"model %q is typed thinking/reasoning and provider %s has no verified non-chat logprob endpoint: no exact route (TODO.md §3.4)",
+				model, providerID)
+		}
+		route.Endpoint = alt
+		s.Logger.Warn("thinking model routed off chat endpoint", "model", model, "endpoint", alt)
 	}
 
 	// Pricing lookup by model name.
@@ -318,6 +353,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /v1/routes", s.handleRoutes)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	return s.withCommon(mux)
 }
 

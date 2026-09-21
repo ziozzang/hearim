@@ -12,6 +12,16 @@ It never uses generated text as the basis of an answer: one question maps to
 exactly one next-token scoring call, and when the label fast path is not
 possible it teacher-forces the label or the full choice continuation instead.
 
+### The name
+
+**헤아림** is the nominal form of the Korean verb **헤아리다**, which carries
+two intertwined meanings: *to count (things) one by one*, and *to grasp or
+comprehend something by thinking it through*. That double sense is exactly
+what this gateway does — it turns the act of understanding ("does this state
+mean the customer wants a refund?") into an act of counting: label logprobs
+measured at one decode position, then normalized. hearim counts, so callers
+can understand — with honest numbers attached.
+
 > 영어가 기본 문서 언어이며, 전체 한국어 번역은 [README.ko.md](README.ko.md)에 있습니다.
 
 ---
@@ -193,6 +203,7 @@ OpenAI standard.
 - `GET /healthz` — liveness
 - `GET /readyz` — fails when no default route has a ready registry
 - `GET /v1/routes` — routes, endpoints, registries, cache plans
+- `GET /metrics` — Prometheus text format (auth required)
 
 ---
 
@@ -203,6 +214,7 @@ OpenAI standard.
 | `hearim serve` | run the gateway |
 | `hearim probe` | Phase 0 capability suite: tokenizer endpoint, logprob shapes, single-token labels, teacher-forced parity, hidden-reasoning and cache evidence; prints a JSON report and exits non-zero when every target fails the go/no-go gate |
 | `hearim bench` | run a labeled JSONL corpus: accuracy, macro F1, NLL, Brier, ECE, candidate mass, p50/p95 latency, and label-order permutation variance (`-permutations N`) |
+| `hearim update` | self-update from GitHub releases with SHA256SUMS verification |
 
 Bench corpus format:
 
@@ -221,6 +233,74 @@ wins on input cost (gemma4:31b vs deepseek-v4.1-flash breaks even at
 h ≈ 0.1754); below it, the cheapest quality-gated candidate. Quality gates
 are explicit (`quality_gate_pass`); price alone never decides. The budget
 guard throttles at 70%/90% and hard-stops at 100% of the included allowance.
+
+### Model name resolution
+
+A request's `model` field resolves in this order:
+
+1. configured alias (`model_aliases`) or fallback chain
+   (`model_alias_chains`, first bound route wins)
+2. explicit `provider:model` (when the prefix names a configured provider)
+3. **bare backend model name** — `"gemma4:31b"` resolves to the provider
+   that serves it; ambiguous names hosted by several providers are an
+   explicit error
+
+### Multi-backend configuration
+
+- `providers[].base_urls` — an endpoint pool for one engine: requests
+  round-robin across replicas and retries fail over to the *next* host, so a
+  dead replica is bypassed instead of retried in place.
+- `model_alias_chains` — ordered fallback: `{"resilient":
+  ["ollama-cloud:gemma4:31b", "vllm-local:google/gemma-4-31B-it"]}`.
+- `models` entries carry upstream metadata:
+
+```yaml
+models:
+  - gemma4:31b                          # plain entry
+  - name: qwen3:32b
+    type: thinking                      # reasoning can't be fully disabled:
+                                        # chat exact routes are vetoed (§3.4)
+  - name: llava:13b
+    type: vision                        # accepts image inputs
+    extra_params: {num_ctx: 16384}      # extra JSON merged upstream
+```
+
+- `extra_params` (provider or model level, model wins per key) merge
+  additional JSON fields into every upstream request — engine-specific knobs
+  like `seed`, `num_ctx`, or gateway-specific parameters. Correctness-
+  critical fields (`logprobs`, `max_tokens`, sampler identity, ...) are
+  protected and cannot be overridden.
+
+### Vision (VLM) image inputs
+
+State objects may declare images via top-level `image` (single URL) or
+`images` (array). Only `https?://` and `data:image/...` URLs are accepted —
+bare paths and other schemes are rejected at validation (state is data, not
+a license to read local files). Up to 8 images, 20 MB per data URL. On
+vision-capable chat routes the state message becomes OpenAI multimodal
+content parts (`image_url`); non-vision routes reject image-bearing states
+with 422.
+
+### Observability
+
+- `GET /metrics` — Prometheus text format (behind the same auth as the API):
+  request counters and duration histograms, per-model question calls by
+  scoring method and probability space, token counters split into
+  input/output/cached-reported, `hearim_prefill_cache_ratio` per route
+  (computed from *reported* cached tokens only — §8.5), budget utilization,
+  route readiness gauges, and basic Go runtime gauges.
+- Response header `x-jev-cached-input-tokens` carries the server-reported
+  cached token count for the request; `x-jev-cache-plan` names the engine's
+  cache strategy.
+
+### Self-update
+
+`hearim update` replaces the running binary with a GitHub release build,
+verifying the SHA-256 from the release's `SHA256SUMS` asset first (design
+followed from [hftools](https://github.com/ziozzang/hftools)). `update
+-check` only reports; `-version v0.2.0` pins a release; `-force` reinstalls.
+Interactive runs also print a once-a-day update notice when a newer release
+exists — disable with `HEARIM_NO_UPDATE_CHECK=1`.
 
 ## Security notes
 
@@ -259,6 +339,8 @@ Package map (all under `internal/hearim/`):
 | `httpapi` | server assembly, handlers, proxy, health |
 | `probe` | Phase 0 capability suite |
 | `bench` | §12.3 benchmark runner |
+| `selfupdate` | GitHub release self-update with SHA256SUMS verification and background update notices |
+| `metrics` | minimal Prometheus text-exposition registry (stdlib only) |
 
 ## Probed capabilities (2026-09-21, real backends)
 

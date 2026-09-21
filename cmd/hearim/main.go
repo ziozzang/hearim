@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -25,11 +26,22 @@ import (
 	"hearim/internal/hearim/httpapi"
 	"hearim/internal/hearim/probe"
 	"hearim/internal/hearim/provider"
+	"hearim/internal/hearim/selfupdate"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
+
+// updateRepo is the GitHub repository self-update pulls release builds from.
+const updateRepo = "ziozzang/hearim"
 
 func main() {
+	// Background update notice (hftools pattern): terminal-only, throttled
+	// to one network check per day, disabled via HEARIM_NO_UPDATE_CHECK.
+	selfupdate.StartNotifyRefresh(selfupdate.NotifyConfig{
+		Repo:    updateRepo,
+		Current: version,
+	})
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -42,6 +54,8 @@ func main() {
 		err = cmdProbe(os.Args[2:])
 	case "bench":
 		err = cmdBench(os.Args[2:])
+	case "update":
+		err = cmdUpdate(os.Args[2:])
 	case "version":
 		fmt.Println("hearim", version)
 	default:
@@ -54,6 +68,96 @@ func main() {
 	}
 }
 
+// cmdUpdate replaces the running binary with the latest (or a specified)
+// GitHub release build, verifying it against the release SHA256SUMS first.
+func cmdUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	check := fs.Bool("check", false, "only report whether a newer version is available")
+	force := fs.Bool("force", false, "reinstall even if already on the latest version")
+	targetVer := fs.String("version", "", "install a specific release tag (for example v0.2.0) instead of the latest")
+	repo := fs.String("repo", updateRepo, "GitHub owner/repo to update from")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	client := &http.Client{}
+	token := os.Getenv("GITHUB_TOKEN")
+
+	var rel *selfupdate.Release
+	var err error
+	if *targetVer != "" {
+		rel, err = selfupdate.ReleaseByTag(ctx, client, "", *repo, *targetVer, token)
+	} else {
+		rel, err = selfupdate.LatestRelease(ctx, client, "", *repo, token)
+	}
+	if err != nil {
+		return fmt.Errorf("look up release: %w", err)
+	}
+	latest := rel.Version()
+	cmp := selfupdate.CompareVersions(latest, version)
+
+	fmt.Printf("current: %s\nlatest:  %s\n", version, latest)
+	switch {
+	case cmp > 0:
+		fmt.Printf("a newer version is available: %s -> %s\n", version, latest)
+	case cmp == 0:
+		fmt.Println("you are on the latest version")
+	default:
+		fmt.Printf("your version is newer than the published release (%s)\n", latest)
+	}
+	if *check {
+		return nil
+	}
+	if cmp <= 0 && *targetVer == "" && !*force {
+		return nil
+	}
+
+	assetName, err := selfupdate.CurrentAssetName(latest)
+	if err != nil {
+		return err
+	}
+	asset, ok := rel.FindAsset(assetName)
+	if !ok {
+		return fmt.Errorf("release %s has no build for %s/%s (asset %q)", rel.TagName, runtime.GOOS, runtime.GOARCH, assetName)
+	}
+	sums, err := selfupdate.Checksums(ctx, client, rel)
+	if err != nil {
+		return err
+	}
+	want := sums[assetName]
+
+	exe, err := selfupdate.ResolveExecutable()
+	if err != nil {
+		return err
+	}
+	tmp, err := selfupdate.DownloadVerified(ctx, client, asset, want, exeDir(exe))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if err := selfupdate.ReplaceExecutable(exe, tmp); err != nil {
+		return err
+	}
+	fmt.Printf("updated %s -> %s (%s)\n", version, latest, exe)
+	return nil
+}
+
+func exeDir(p string) string {
+	dir := p
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' || p[i] == '\\' {
+			dir = p[:i]
+			break
+		}
+	}
+	if dir == p {
+		dir = "."
+	}
+	return dir
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: hearim <command> [flags]
 
@@ -61,6 +165,7 @@ commands:
   serve   run the gateway HTTP server
   probe   run capability probes against configured providers (Phase 0)
   bench   run a labeled JSONL corpus benchmark
+  update  replace this binary with the latest GitHub release build
   version print version
 `)
 }
@@ -180,16 +285,18 @@ func cmdProbe(args []string) error {
 		if *providerID != "" && p.ID != *providerID {
 			continue
 		}
-		models := p.Models
+		var models []string
 		if *model != "" {
 			models = []string{*model}
-		}
-		if len(models) == 0 {
-			// Alias-derived defaults.
-			for alias, t := range cfg.ModelAliases {
-				_ = alias
-				if pid, m := splitTarget(t); pid == p.ID && m != "" {
-					models = append(models, m)
+		} else {
+			models = p.Models.Names()
+			if len(models) == 0 {
+				// Alias-derived defaults.
+				for alias, t := range cfg.ModelAliases {
+					_ = alias
+					if pid, m := splitTarget(t); pid == p.ID && m != "" {
+						models = append(models, m)
+					}
 				}
 			}
 		}
