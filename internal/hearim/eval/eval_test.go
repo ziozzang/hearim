@@ -532,3 +532,61 @@ func TestImageRequiresExplicitVisionType(t *testing.T) {
 		t.Fatalf("declared vision model should pass: %v", err)
 	}
 }
+
+func TestUserSuffixAppliedToPromptAndChat(t *testing.T) {
+	// Legacy-GLM style command token: "/no_think" at the tail of the user
+	// request, before the close tag.
+	cfg := testConfig(t)
+	fake := &evalFake{logprobs: []float64{-0.4, -1.4}}
+	route := buildRoute(t, fake, cfg)
+	route.ModelCfg = &config.ModelConfig{Name: "m", Thinking: &config.ThinkingConfig{
+		UserSuffix: "/no_think",
+		CloseTag:   "</think>",
+	}}
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": "s",
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	if _, err := ev.EvaluateQuestion(context.Background(), plan, 0, route); err != nil {
+		t.Fatal(err)
+	}
+	req := fake.lastReq
+	if !strings.HasSuffix(req.PromptText, "/no_think</think>\n") {
+		t.Errorf("raw prompt tail = %q, want /no_think before the close tag and delimiter",
+			req.PromptText[len(req.PromptText)-40:])
+	}
+}
+
+// chatFake returns real chat messages so the suffix append path is exercised.
+type chatFake struct{ evalFake }
+
+func (f *chatFake) RenderChat(p *compile.EvaluationPlan, qi int) []compile.ChatMessage {
+	return p.ChatMessages(p.Questions[qi])
+}
+
+func TestUserSuffixAppliedToChatMessage(t *testing.T) {
+	cfg := testConfig(t)
+	fake := &chatFake{evalFake{logprobs: []float64{-0.4, -1.4}}}
+	route := buildRoute(t, &fake.evalFake, cfg)
+	route.Adapter = fake
+	route.ModelCfg = &config.ModelConfig{Name: "m", Thinking: &config.ThinkingConfig{
+		UserSuffix: "/no_think",
+	}}
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": "s",
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	if _, err := ev.EvaluateQuestion(context.Background(), plan, 0, route); err != nil {
+		t.Fatal(err)
+	}
+	msgs := fake.lastReq.ChatMessages
+	if len(msgs) == 0 {
+		t.Fatal("no chat messages recorded")
+	}
+	last := msgs[len(msgs)-1]
+	if s, ok := last.Content.(string); !ok || !strings.HasSuffix(s, "/no_think") {
+		t.Errorf("chat last message tail = %v", last.Content)
+	}
+}

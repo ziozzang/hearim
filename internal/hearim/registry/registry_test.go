@@ -369,3 +369,23 @@ func TestParseTopNCap(t *testing.T) {
 		t.Errorf("unrelated error should give 0, got %d", v)
 	}
 }
+
+func TestUserSuffixInProbeContextAndKey(t *testing.T) {
+	f := &nSweepFake{}
+	base, err := Build(context.Background(), f, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.UserSuffix = "/no_think"
+	suffixed, err := Build(context.Background(), f, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suffixed.UserSuffix != "/no_think" {
+		t.Errorf("user suffix = %q", suffixed.UserSuffix)
+	}
+	if suffixed.Key() == base.Key() {
+		t.Error("user suffix must participate in the persistence key")
+	}
+}

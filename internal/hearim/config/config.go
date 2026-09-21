@@ -247,6 +247,11 @@ type ThinkingConfig struct {
 	CloseTag       string `yaml:"close_tag" json:"close_tag"`
 	WaitClose      bool   `yaml:"wait_close" json:"wait_close"`
 	MaxThinkTokens int    `yaml:"max_think_tokens" json:"max_think_tokens"`
+	// UserSuffix is appended to the tail of the user request — the
+	// command-token family of controls (legacy GLM: "/no_think" at the end
+	// of the user message). Applied to the last chat user message and the
+	// raw prompt before the close tag; registry probes measure under it.
+	UserSuffix string `yaml:"user_suffix" json:"user_suffix"`
 }
 
 // EffectiveMaxThinkTokens returns the generation bound for wait-close mode.

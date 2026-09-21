@@ -328,9 +328,10 @@ models:
       max_think_tokens: 512
 ```
 
-1. **disable** — 카드가 알려주는 스위치(`think: false`,
-   `reasoning_effort: "none"` 등)를 모든 업스트림 요청에 적용하며 엔진
-   기본값을 대체한다.
+1. **disable** — 카드가 알려주는 스위치를 적용한다. 요청 필드형
+   (`think: false`, `reasoning_effort: "none"`)과 **명령 토큰형**(
+   `user_suffix: "/no_think"` — 구형 GLM처럼 유저 요청 맨 끝에 붙는
+   계열)을 모두 지원한다. 프롬프트 수준 토글은 `prompt.system_prefix`로.
 2. **close-tag 프리로드** — 항상 `<think>` 블록을 여는 모델에게는 답변
    마커 바로 뒤에 닫는 태그를 미리 넣는다
    (`...</answer-label>\n</think>\n`). 그러면 다음 토큰이 곧 답 라벨이어서
@@ -367,6 +368,12 @@ models:
 경로에만 적용된다. 재정의는 템플릿 식별자에 해시로 반영되어 레지스트리와
 prefix key가 재정의별로 분리되고, 라벨 경계도 정확히 그 문맥에서
 검증된다.
+
+의사결정 규칙 전체: **thinking을 끄고(필드·명령 토큰·프롬프트 prefix) →
+N을 모델에 맞춘다(스윕은 후보 라벨 전체가 top-N logit 항목에 보여야
+성공) → 그래도 라벨을 회수할 수 없으면 그 모델을 raw completions
+서피스로 보낸다**(`models[].endpoint: completions`; probe가 근거와 함께
+`completions_fallback_viable`을 보고한다).
 
 `close_tag`는 자유 형식이라 모델 계열별 태그 구조를 그대로 쓸 수 있다.
 2026-09-21에 조사한 Ollama Cloud 카드만 해도 세 가지로 다르다:

@@ -140,8 +140,14 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	if thinking != nil && thinking.CloseTag != "" && !thinking.WaitClose {
 		preloadTag = thinking.CloseTag
 	}
+	// Command-token controls (legacy GLM "/no_think") ride at the tail of
+	// the user content, before the close tag.
+	userSuffix := ""
+	if thinking != nil {
+		userSuffix = thinking.UserSuffix
+	}
 
-	prompt := q.PromptPrefix + q.PromptSuffix + preloadTag + route.Registry.Delimiter
+	prompt := q.PromptPrefix + q.PromptSuffix + userSuffix + preloadTag + route.Registry.Delimiter
 	res := &QuestionResult{ID: q.ID}
 	var attempts []string
 
@@ -152,14 +158,16 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	var usage provider.NextTokenScoreResult
 
 	chatMsgs := route.Adapter.RenderChat(plan, qi)
-	if preloadTag != "" && len(chatMsgs) > 0 {
-		// Append the close tag to the last message content (string concat,
-		// or an extra text part for multimodal content).
+	if (preloadTag != "" || userSuffix != "") && len(chatMsgs) > 0 {
+		// Append the user command suffix, then the close tag, to the last
+		// message content (string concat, or extra text parts for
+		// multimodal content).
+		tail := userSuffix + preloadTag
 		last := chatMsgs[len(chatMsgs)-1]
 		if s, ok := last.Content.(string); ok {
-			chatMsgs[len(chatMsgs)-1].Content = s + preloadTag
+			chatMsgs[len(chatMsgs)-1].Content = s + tail
 		} else if parts, ok := last.Content.([]map[string]any); ok {
-			chatMsgs[len(chatMsgs)-1].Content = append(parts, map[string]any{"type": "text", "text": preloadTag})
+			chatMsgs[len(chatMsgs)-1].Content = append(parts, map[string]any{"type": "text", "text": tail})
 		}
 	}
 

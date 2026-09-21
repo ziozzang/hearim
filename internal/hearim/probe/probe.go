@@ -58,6 +58,10 @@ type Summary struct {
 	// handling, not as a plain no-reasoning route.
 	ThinkingControlVerified bool `json:"thinking_control_verified,omitempty"`
 	ThinkingTagsEmitted     bool `json:"thinking_tags_emitted,omitempty"`
+	// CompletionsFallbackViable: the raw completions surface returned
+	// usable logprobs when the resolved route was chat — evidence for
+	// pinning models[].endpoint: completions on thinking models.
+	CompletionsFallbackViable bool `json:"completions_fallback_viable,omitempty"`
 }
 
 // thinkOpenMarkers are the known reasoning-block openers across model
@@ -77,7 +81,7 @@ func probeThinkingControl(ctx context.Context, adpt provider.Adapter, model stri
 	req := provider.NextTokenScoreRequest{
 		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: model},
 		Endpoint:            endpoint,
-		PromptText:          fixedProbePrompt(cfg) + reg.Delimiter,
+		PromptText:          fixedProbePrompt(cfg) + modelUserSuffix(modelCfg) + reg.Delimiter,
 		CandidateTokenIDs:   ids,
 		CandidateTokenTexts: texts,
 		TopK:                caps.MaxTopLogprobs,
@@ -113,6 +117,40 @@ func probeThinkingControl(ctx context.Context, adpt provider.Adapter, model stri
 	}
 	check("thinking_control", true, strategy+": no reasoning markers in output")
 	return true, false
+}
+
+// probeCompletionsFallback tries one scoring call against the completions
+// surface and reports whether it yields candidate logprobs.
+func probeCompletionsFallback(ctx context.Context, adpt provider.Adapter, model string,
+	reg *registry.Registry, opts registry.Options, check func(string, bool, string)) bool {
+
+	ids, texts, _ := reg.Bind(registryLabels(reg))
+	res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
+		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: model},
+		Endpoint:            config.EndpointCompletions,
+		PromptText:          opts.PromptBase + opts.CloseTag + reg.Delimiter,
+		CandidateTokenIDs:   ids,
+		CandidateTokenTexts: texts,
+		TopK:                reg.TopN,
+	})
+	ok := err == nil && len(res.CandidateLogprobs) >= 2
+	detail := "logprobs recoverable: pin models[].endpoint: completions"
+	if !ok {
+		if err != nil {
+			detail = "no usable logprobs: " + errString(err)
+		} else {
+			detail = fmt.Sprintf("only %d/%d labels recovered", len(res.CandidateLogprobs), len(texts))
+		}
+	}
+	check("completions_fallback", ok, detail)
+	return ok
+}
+
+func modelUserSuffix(mc *config.ModelConfig) string {
+	if mc == nil || mc.Thinking == nil {
+		return ""
+	}
+	return mc.Thinking.UserSuffix
 }
 
 func truncate(s string, n int) string {
@@ -163,7 +201,9 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	}
 
 	// Build the registry: delimiter adoption + single-token labels (§6.1).
-	reg, regErr := registry.Build(ctx, adpt, registry.Options{
+	// The production reasoning control applies: think-off measurements and
+	// think-on traffic would disagree on N and label boundaries.
+	regOpts := registry.Options{
 		BackendModel:        model,
 		TokenizerRevision:   caps.EngineVersion,
 		Endpoint:            string(endpoint),
@@ -171,7 +211,18 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 		PromptBase:          probePrompt,
 		DelimiterCandidates: cfg.DelimiterCandidates,
 		Alphabets:           cfg.LabelAlphabets,
-	})
+	}
+	if endpoint == config.EndpointChatCompletion {
+		regOpts.NoReasoning = true
+	}
+	if modelCfg != nil && modelCfg.Thinking != nil {
+		if modelCfg.Thinking.DisableField != "" {
+			regOpts.ReasoningField = modelCfg.Thinking.DisableField
+			regOpts.ReasoningValue = modelCfg.Thinking.DisableValue
+		}
+		regOpts.UserSuffix = modelCfg.Thinking.UserSuffix
+	}
+	reg, regErr := registry.Build(ctx, adpt, regOpts)
 	if regErr != nil {
 		check("registry_build", false, errString(regErr))
 		rep.Summary.Go = false
@@ -179,7 +230,9 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	}
 	rep.Registry = reg
 	check("registry_build", true,
-		fmt.Sprintf("delimiter=%q labels=%d policy=%s", display(reg.Delimiter), len(reg.Labels()), reg.BoundaryPolicy))
+		fmt.Sprintf("delimiter=%q labels=%d policy=%s top_n=%d/%d labels_visible=%d/%d",
+			display(reg.Delimiter), len(reg.Labels()), reg.BoundaryPolicy,
+			reg.TopN, reg.TopNCap, reg.TopNRecovered, len(reg.Labels())))
 
 	// Completion logprob verification with all candidates present.
 	ids, texts, bound := reg.Bind(registryLabels(reg))
@@ -232,6 +285,15 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	// cached-token count INCREASE. A unique nonce keeps the first shot cold
 	// even after the registry probes warmed the base prompt.
 	rep.Summary.CacheEvidence = probeCacheEvidence(ctx, adpt, model, reg, modelCfg, endpoint, cfg, check)
+
+	// Completions fallback (decision rule: think-off -> per-model N ->
+	// completions). When the resolved route is chat and thinking markers
+	// persist or N could not recover labels, the raw completions surface is
+	// the last exact option; report whether it actually returns logprobs so
+	// the operator can pin models[].endpoint: completions with evidence.
+	if endpoint == config.EndpointChatCompletion {
+		rep.Summary.CompletionsFallbackViable = probeCompletionsFallback(ctx, adpt, model, reg, regOpts, check)
+	}
 
 	// Native generate endpoint (informational).
 	rep.Summary.NativeGenerate = hasNative(caps)

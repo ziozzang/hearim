@@ -41,6 +41,7 @@ type Registry struct {
 	ReasoningProfileHash string                  `json:"reasoning_profile_hash,omitempty"`
 	TemplateVersion      string                  `json:"template_version"`
 	CloseTag             string                  `json:"close_tag,omitempty"`
+	UserSuffix           string                  `json:"user_suffix,omitempty"`
 	Delimiter            string                  `json:"delimiter"`
 	BoundaryPolicy       string                  `json:"boundary_policy"` // exact-prefix-plus-one | probe-only
 	Alphabets            map[string][]LabelEntry `json:"alphabets"`
@@ -50,8 +51,9 @@ type Registry struct {
 	// TopN is the smallest top_logprobs request that recovered every label
 	// of the preferred alphabet at the probe context (auto-tuned sweep).
 	// TopNCap is the server's accepted maximum (0 = not discovered).
-	TopN    int `json:"top_n,omitempty"`
-	TopNCap int `json:"top_n_cap,omitempty"`
+	TopN          int `json:"top_n,omitempty"`
+	TopNCap       int `json:"top_n_cap,omitempty"`
+	TopNRecovered int `json:"top_n_recovered,omitempty"`
 	// Verified means the completion probe identified label logprobs (§6.1
 	// step 10).
 	Verified bool   `json:"verified"`
@@ -73,8 +75,19 @@ type Options struct {
 	// the delimiter for <think>-style models: labels are then scored in the
 	// post-thinking context (TODO.md §3.4 technique).
 	CloseTag string
+	// UserSuffix (e.g. legacy-GLM "/no_think") is appended to the tail of
+	// the user content before the close tag; probes measure under it so
+	// label boundaries and N match production.
+	UserSuffix string
 	// DelimiterCandidates tried in order (compiler config).
 	DelimiterCandidates []string
+	// ReasoningField/ReasoningValue/NoReasoning replicate the production
+	// thinking control for every probe: N and label boundaries must be
+	// measured under the same reasoning configuration the live traffic
+	// uses, or the discovered values are wrong for it.
+	ReasoningField string
+	ReasoningValue any
+	NoReasoning    bool
 	// Alphabets: ordered label sets; names are assigned as numeric,
 	// upper_alpha, alpha3, alpha4...
 	Alphabets [][]string
@@ -111,6 +124,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		ChatTemplateHash:  opts.ChatTemplateHash,
 		TemplateVersion:   opts.TemplateVersion,
 		CloseTag:          opts.CloseTag,
+		UserSuffix:        opts.UserSuffix,
 		Alphabets:         map[string][]LabelEntry{},
 		BoundaryPolicy:    "probe-only",
 		BuiltAt:           time.Now().UTC().Format(time.RFC3339),
@@ -134,7 +148,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		// stable single token (§6.1 steps 6-9). Probing happens in the
 		// post-close-tag context so verified boundaries transfer exactly.
 		for _, delim := range opts.DelimiterCandidates {
-			prefix := opts.PromptBase + opts.CloseTag + delim
+			prefix := opts.PromptBase + opts.UserSuffix + opts.CloseTag + delim
 			base, err := adpt.Tokenize(ctx, opts.BackendModel, prefix)
 			if err != nil {
 				continue
@@ -182,7 +196,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		var lastErr error
 	DelimLoop:
 		for _, delim := range opts.DelimiterCandidates {
-			prefix := opts.PromptBase + opts.CloseTag + delim
+			prefix := opts.PromptBase + opts.UserSuffix + opts.CloseTag + delim
 			for ai, alphabet := range opts.Alphabets {
 				texts := make([]string, 0, len(alphabet))
 				for _, label := range alphabet {
@@ -253,7 +267,9 @@ func registryLabels(r *Registry) []string {
 	return out
 }
 
-// sweepTopN finds the minimal N recovering all labels and the server cap.
+// sweepTopN finds the minimal N at which every candidate label is visible
+// in the top-N logit entries, and the server cap. A label that never shows
+// up cannot be scored: partial recovery is recorded, TopN stays 0.
 func (r *Registry) sweepTopN(ctx context.Context, adpt provider.Adapter, opts Options) {
 	ids, texts, _ := r.Bind(registryLabels(r))
 	caps := adpt.Capabilities()
@@ -264,7 +280,7 @@ func (r *Registry) sweepTopN(ctx context.Context, adpt provider.Adapter, opts Op
 		res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
 			Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
 			Endpoint:            endpointKind(r.Endpoint),
-			PromptText:          opts.PromptBase + opts.CloseTag + r.Delimiter,
+			PromptText:          opts.PromptBase + opts.UserSuffix + opts.CloseTag + r.Delimiter,
 			CandidateTokenIDs:   ids,
 			CandidateTokenTexts: texts,
 			TopK:                n,
@@ -284,6 +300,7 @@ func (r *Registry) sweepTopN(ctx context.Context, adpt provider.Adapter, opts Op
 				found++
 			}
 		}
+		r.TopNRecovered = found
 		if found == len(texts) {
 			r.TopN = n
 			if r.TopNCap == 0 {
@@ -455,6 +472,7 @@ func OptionsKey(opts Options) string {
 		r.Delimiter = opts.DelimiterCandidates[0]
 	}
 	r.CloseTag = opts.CloseTag
+	r.UserSuffix = opts.UserSuffix
 	return r.Key()
 }
 
@@ -472,6 +490,8 @@ func (r *Registry) Key() string {
 	h.Write([]byte(r.Endpoint))
 	h.Write([]byte{0})
 	h.Write([]byte(r.CloseTag))
+	h.Write([]byte{0})
+	h.Write([]byte(r.UserSuffix))
 	h.Write([]byte{0})
 	h.Write([]byte(r.Delimiter))
 	return hex.EncodeToString(h.Sum(nil))[:24]

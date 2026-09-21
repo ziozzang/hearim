@@ -348,9 +348,11 @@ models:
       max_think_tokens: 512
 ```
 
-1. **disable** — the card's own switch (`think: false`,
-   `reasoning_effort: "none", ...) is applied to every upstream request,
-   overriding the engine default.
+1. **disable** — the card's own switch, applied to every upstream
+   request: request-field form (`think: false`, `reasoning_effort:
+   "none"`) or **command-token form** (`user_suffix: "/no_think"` — the
+   family legacy GLM used, appended to the tail of the user request).
+   Prompt-level toggles go in `prompt.system_prefix`.
 2. **close-tag preload** — for models that always open a `<think>` block,
    the closing tag is preloaded right after the answer marker
    (`...</answer-label>\n</think>\n`), so the very next token is the answer
@@ -389,6 +391,13 @@ for shape control and apply to raw completion routes only. The override is
 hashed into the template identity, so registries and prefix keys stay
 per-override and label boundaries are probed in the exact overridden
 context.
+
+The decision rule, end to end: **turn thinking off (field, command token,
+or prompt prefix) → tune N to the model (the sweep requires every candidate
+label to be visible in the top-N logit entries) → if labels still cannot
+be recovered, route the model to the raw completions surface**
+(`models[].endpoint: completions`; the probe reports
+`completions_fallback_viable` with evidence).
 
 `close_tag` is free-form, so family-specific tag structures work — the
 Ollama Cloud cards surveyed on 2026-09-21 already differ three ways:
