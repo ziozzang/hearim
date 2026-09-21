@@ -293,6 +293,22 @@ models:
 `thinking` 블록이 없으면 `type: thinking` 모델은 엔진이 reasoning을 완전히
 끌 수 없는 한 exact chat 경로가 없다(TODO.md §3.4).
 
+`close_tag`는 자유 형식이라 모델 계열별 태그 구조를 그대로 쓸 수 있다.
+2026-09-21에 조사한 Ollama Cloud 카드만 해도 세 가지로 다르다:
+
+- **gemma4** — `<|think|>` 시스템 프롬프트 토큰으로 토글되지만, edge 외
+  모델은 꺼도 *태그 구조를 계속 출력한다*(`<|channel>thought …
+  <channel|>`, 빈 블록). `close_tag: "<channel|>"`로 빈 블록을 건너뛴다.
+- **gpt-oss** — effort `low`/`medium`/`high`만 있고 완전 비활성화는 불가 →
+  exact chat 경로가 없다.
+- **deepseek-v4.1-flash** — 카드에 제어 방법이 아예 없다.
+
+카드마다 다르고 시간이 지나면 달라지므로, `hearim probe`는 **설정된
+제어를 실제 모델에 대해 검증**한다: disable 제어를 적용한 유한 생성에서
+reasoning 마커를 스캔하고, 보고서에 `thinking_control_verified`를 기록하며,
+gemma4처럼 태그가 남는 경우 `thinking_tags_emitted`로 표시해 close-tag
+처리가 필요함을 알린다.
+
 ## 비전(VLM) 이미지 입력
 
 state 객체는 최상위 `image`(단일 URL) 또는 `images`(배열)로 이미지를

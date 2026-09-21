@@ -135,8 +135,12 @@ type NextTokenScoreResult struct {
 	PromptTokens         int
 	CachedPromptTokens   int
 	BackendRequestID     string
-	ScoringMethod        string // selected-token-ids|top-k|constrained-vocab
+	ScoringMethod        string // selected-token-ids|top-k|constrained-vocab|wait-close-tag
 	ProbabilitySpace     string
+	// GeneratedText is the visible output of the scoring call (usually one
+	// token; the full completion for wait-close). Probes use it to verify
+	// whether a model-card thinking control actually suppressed reasoning.
+	GeneratedText string
 }
 
 // ContinuationScoreRequest teacher-forces full choice texts (TODO.md §3.11

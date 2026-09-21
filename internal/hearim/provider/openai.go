@@ -340,6 +340,7 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 		BackendRequestID:     out.ID,
 		ScoringMethod:        method,
 		ProbabilitySpace:     space,
+		GeneratedText:        out.Choices[0].Text,
 	}
 	return res, nil
 }
@@ -495,6 +496,7 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 	if out.Usage.PromptTokensDetails != nil {
 		res.CachedPromptTokens = out.Usage.PromptTokensDetails.CachedTokens
 	}
+	res.GeneratedText = out.Choices[0].Message.Content
 	return res, nil
 }
 

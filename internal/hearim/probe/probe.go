@@ -51,10 +51,80 @@ type Summary struct {
 	HiddenReasoning     bool `json:"hidden_reasoning_detected"`
 	CacheEvidence       bool `json:"cache_evidence"`
 	Go                  bool `json:"go"`
+	// ThinkingControlVerified: a bounded generation under the configured
+	// disable control contained no reasoning markers. ThinkingTagsEmitted:
+	// the model still emits tag structure when thinking is off (e.g.
+	// gemma4's empty <|channel>thought blocks) — usable only via close-tag
+	// handling, not as a plain no-reasoning route.
+	ThinkingControlVerified bool `json:"thinking_control_verified,omitempty"`
+	ThinkingTagsEmitted     bool `json:"thinking_tags_emitted,omitempty"`
 }
 
-// Run executes the capability suite against one provider/model.
-func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.CompilerConfig) (*Report, error) {
+// thinkOpenMarkers are the known reasoning-block openers across model
+// families; a generation containing one means reasoning was not suppressed.
+var thinkOpenMarkers = []string{
+	"<think", "<|think", "<|channel>thought", "<reasoning", "<|reasoning",
+}
+
+// probeThinkingControl runs a bounded generation with the model's configured
+// disable control applied and reports whether reasoning markers appear.
+func probeThinkingControl(ctx context.Context, adpt provider.Adapter, model string,
+	reg *registry.Registry, modelCfg *config.ModelConfig, endpoint config.EndpointKind,
+	cfg config.CompilerConfig, check func(string, bool, string)) (verified bool, tagsEmitted bool) {
+
+	ids, texts, _ := reg.Bind(registryLabels(reg))
+	caps := adpt.Capabilities()
+	req := provider.NextTokenScoreRequest{
+		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: model},
+		Endpoint:            endpoint,
+		PromptText:          fixedProbePrompt(cfg) + reg.Delimiter,
+		CandidateTokenIDs:   ids,
+		CandidateTokenTexts: texts,
+		TopK:                caps.MaxTopLogprobs,
+		NoReasoning:         endpoint == config.EndpointChatCompletion,
+		MaxOutputTokens:     64,
+	}
+	strategy := "engine-default think:false"
+	if modelCfg != nil && modelCfg.Thinking != nil {
+		if modelCfg.Thinking.DisableField != "" {
+			req.ReasoningField = modelCfg.Thinking.DisableField
+			req.ReasoningValue = modelCfg.Thinking.DisableValue
+			strategy = fmt.Sprintf("%s=%v", modelCfg.Thinking.DisableField, modelCfg.Thinking.DisableValue)
+		}
+		if modelCfg.Thinking.CloseTag != "" {
+			strategy += fmt.Sprintf(" + close_tag %q", modelCfg.Thinking.CloseTag)
+			if modelCfg.Thinking.WaitClose {
+				strategy += " (wait_close)"
+			}
+		}
+	}
+	res, err := adpt.ScoreNextToken(ctx, req)
+	if err != nil {
+		check("thinking_control", false, strategy+": "+errString(err))
+		return false, false
+	}
+	generated := res.GeneratedText
+	for _, m := range thinkOpenMarkers {
+		if strings.Contains(generated, m) {
+			check("thinking_control", false,
+				fmt.Sprintf("%s: reasoning markers still present in output %q", strategy, truncate(generated, 80)))
+			return false, true
+		}
+	}
+	check("thinking_control", true, strategy+": no reasoning markers in output")
+	return true, false
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// Run executes the capability suite against one provider/model. modelCfg
+// carries the model-card-derived thinking configuration (may be nil).
+func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.CompilerConfig, modelCfg *config.ModelConfig) (*Report, error) {
 	rep := &Report{
 		ProviderID: adpt.ID(),
 		Engine:     string(adpt.Engine()),
@@ -141,6 +211,14 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	chatOK, chatDetail := probeChat(ctx, adpt, model, probePrompt, reg, cfg)
 	rep.Summary.ChatLogprobs = chatOK
 	check("chat_logprobs", chatOK, chatDetail)
+
+	// Model-card thinking control verification: model cards differ per
+	// model (gemma4: <|think|> system token, tags still emitted when off;
+	// gpt-oss: effort low/medium/high only; many cards document nothing),
+	// so the configured control is tested against the live model instead
+	// of trusted.
+	rep.Summary.ThinkingControlVerified, rep.Summary.ThinkingTagsEmitted =
+		probeThinkingControl(ctx, adpt, model, reg, modelCfg, endpoint, cfg, check)
 
 	// Hidden reasoning detection (§12.1): visible output 1 token must equal
 	// provider usage output tokens.

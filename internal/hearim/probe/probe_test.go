@@ -52,6 +52,7 @@ func (f *probeFake) ScoreNextToken(ctx context.Context, req provider.NextTokenSc
 		CachedPromptTokens:   10,
 		ScoringMethod:        "selected-token-ids",
 		ProbabilitySpace:     provider.SpaceRaw,
+		GeneratedText:        "1",
 	}, nil
 }
 
@@ -77,7 +78,7 @@ func TestProbeReportGoGate(t *testing.T) {
 		DelimiterCandidates: []string{"\n"},
 		LabelAlphabets:      [][]string{{"1", "2", "3", "4"}},
 	}
-	rep, err := Run(context.Background(), &probeFake{}, "gemma4:31b", cfg)
+	rep, err := Run(context.Background(), &probeFake{}, "gemma4:31b", cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,6 +100,42 @@ func TestProbeReportGoGate(t *testing.T) {
 	if rep.Marshal() == "" {
 		t.Error("marshal produced nothing")
 	}
+	if !rep.Summary.ThinkingControlVerified || rep.Summary.ThinkingTagsEmitted {
+		t.Errorf("thinking control summary = %+v", rep.Summary)
+	}
+}
+
+// thinkingFake still emits a reasoning block under the disable control —
+// the verification must flag it.
+type thinkingFake struct{ probeFake }
+
+func (f *thinkingFake) ScoreNextToken(ctx context.Context, req provider.NextTokenScoreRequest) (*provider.NextTokenScoreResult, error) {
+	res, err := f.probeFake.ScoreNextToken(ctx, req)
+	if res != nil {
+		res.GeneratedText = "<|channel>thought empty block<channel|>1"
+	}
+	return res, err
+}
+
+func TestProbeDetectsStillEmittedTags(t *testing.T) {
+	cfg := config.CompilerConfig{
+		TemplateVersion:     "systemone-v1",
+		DelimiterCandidates: []string{"\n"},
+		LabelAlphabets:      [][]string{{"1", "2"}},
+	}
+	rep, err := Run(context.Background(), &thinkingFake{}, "gemma4:31b", cfg,
+		&config.ModelConfig{Name: "gemma4:31b", Thinking: &config.ThinkingConfig{
+			DisableField: "think", DisableValue: false, CloseTag: "<channel|>",
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Summary.ThinkingControlVerified {
+		t.Error("markers in output must fail verification")
+	}
+	if !rep.Summary.ThinkingTagsEmitted {
+		t.Error("tags_emitted should be set when markers persist")
+	}
 }
 
 func TestProbeFailsWithoutLabels(t *testing.T) {
@@ -109,7 +146,7 @@ func TestProbeFailsWithoutLabels(t *testing.T) {
 		DelimiterCandidates: []string{"\n"},
 		LabelAlphabets:      [][]string{{"1", "2"}},
 	}
-	rep, err := Run(context.Background(), f, "m", cfg)
+	rep, err := Run(context.Background(), f, "m", cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

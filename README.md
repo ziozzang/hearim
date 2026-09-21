@@ -311,6 +311,23 @@ models:
 Without a `thinking` block, `type: thinking` models simply have no exact
 chat route (TODO.md §3.4) unless the engine can fully disable reasoning.
 
+`close_tag` is free-form, so family-specific tag structures work — the
+Ollama Cloud cards surveyed on 2026-09-21 already differ three ways:
+
+- **gemma4** — thinking toggles via a `<|think|>` system-prompt token, but
+  non-edge models *still emit the tag structure when disabled*
+  (`<|channel>thought … <channel|>`, with an empty block). Configure
+  `close_tag: "<channel|>"` so the empty block is skipped.
+- **gpt-oss** — effort `low`/`medium`/`high` only; reasoning cannot be
+  fully disabled, so it has no exact chat route.
+- **deepseek-v4.1-flash** — the card documents no control at all.
+
+Because cards vary (and drift), `hearim probe` **verifies the configured
+control against the live model**: a bounded generation under the disable
+control is scanned for reasoning markers; the report sets
+`thinking_control_verified`, and `thinking_tags_emitted` flags the
+gemma4-style case where tags persist and close-tag handling is required.
+
 ### Vision (VLM) image inputs
 
 State objects may declare images via top-level `image` (single URL) or

@@ -29,7 +29,7 @@ import (
 	"hearim/internal/hearim/selfupdate"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 // updateRepo is the GitHub repository self-update pulls release builds from.
 const updateRepo = "ziozzang/hearim"
@@ -279,6 +279,7 @@ func cmdProbe(args []string) error {
 	type target struct {
 		provider config.ProviderConfig
 		model    string
+		modelCfg *config.ModelConfig
 	}
 	var targets []target
 	for _, p := range cfg.Providers {
@@ -301,7 +302,7 @@ func cmdProbe(args []string) error {
 			}
 		}
 		for _, m := range models {
-			targets = append(targets, target{p, m})
+			targets = append(targets, target{p, m, p.Models.Find(m)})
 		}
 	}
 	if len(targets) == 0 {
@@ -316,7 +317,7 @@ func cmdProbe(args []string) error {
 		}
 		logger.Info("probing", "provider", t.provider.ID, "model", t.model)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		rep, err := probe.Run(ctx, adpt, t.model, cfg.Compiler)
+		rep, err := probe.Run(ctx, adpt, t.model, cfg.Compiler, t.modelCfg)
 		cancel()
 		if err != nil {
 			return err

@@ -34,8 +34,19 @@ providers:
     engine: ollama
     base_url: https://ollama.com/v1
     api_key: ${OLLAMA_API_KEY}
+    # Thinking control differs per model card (verified 2026-09-21):
+    #   gemma4            — <|think|> system token to toggle; tags still
+    #                       emitted when off (<|channel>thought ... <channel|>)
+    #   gpt-oss           — reasoning effort low/medium/high only; cannot
+    #                       be fully disabled -> no exact chat route
+    #   deepseek-v4.1-flash — card documents no control; verify with
+    #                       `hearim probe` before trusting one
     models:
-      - gemma4:31b
+      - name: gemma4:31b
+        type: chat
+        thinking:
+          close_tag: "<channel|>"   # gemma4's own tag structure; the empty
+                                    # thought block is skipped, next token = label
       - deepseek-v4.1-flash
       - name: gpt-oss:20b
         type: thinking          # low/medium/high only on Ollama: no exact chat route
