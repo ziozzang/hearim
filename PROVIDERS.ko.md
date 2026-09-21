@@ -33,6 +33,18 @@ vision+tools+thinking+cloud 태그 모델: `gemma4`(e2b–31b),
 | kimi-k3 | ✅ (190 토큰) | `` | ❌ |
 | minimax-m3 | ✅ (217 토큰) | `` | ❌ |
 
+2차 추가 실측(같은 날, 소진): cloud의 네이티브 `/api/chat`·`/api/generate`
+요청 구조체에는 `logprobs` **bool 필드가 존재**하고(숫자를 보내면
+"cannot unmarshal number into Go struct field .logprobs of type bool"
+오류 — 필드가 있다는 뜻), `logprobs: true`는 조용히 받아들여진다 —
+그러나 응답에서 logprobs가 통째로 빠진다(스트리밍 포함). OpenAI 표면의
+스트리밍 chat/completions + logprobs: 없음. 모델별 스윕(gpt-oss:20b,
+deepseek-v4.1-flash, glm-5.3-flash, kimi-k3): 없음. 로컬 네이티브
+`/api/chat`에 `logprobs: true`를 주면 **토큰별 logprob이 스트리밍된다**
+(샘플된 토큰만 — 청크당 `{token, logprob, bytes}`). 로컬의 OpenAI chat
+표면이 top-N까지 주므로 여전히 더 낫고, 이 관찰은 파이프가 로컬엔
+존재하고 cloud에서 서버 쪽으로 걷어낸다는 증거로서만 중요하다.
+
 추가 실측(같은 날): Ollama Cloud는 **`/v1/responses`(Responses API)를
 노출**하고 `output_text` 콘텐츠 파트에 `logprobs` 필드가 있다 — 뼈대는
 존재 — 그러나 서버가 `top_logprobs` 파라미터를 0으로 만들고(보낸 값과

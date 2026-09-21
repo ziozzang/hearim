@@ -33,6 +33,19 @@ Vision+tools+thinking+cloud tagged models: `gemma4` (e2b–31b), `qwen3.5`
 | kimi-k3 | ✅ (190 tokens) | `` | ❌ |
 | minimax-m3 | ✅ (217 tokens) | `` | ❌ |
 
+Second follow-up (same day, exhaustive): the native `/api/chat` and
+`/api/generate` request structs on cloud DO carry a `logprobs` **bool**
+(sending a number errors with "cannot unmarshal number into Go struct
+field .logprobs of type bool" — the field exists), and `logprobs: true`
+is accepted silently — but the response omits logprobs entirely,
+streaming included. Streaming chat/completions with logprobs on the
+OpenAI surface: none. Per-model sweep (gpt-oss:20b, deepseek-v4.1-flash,
+glm-5.3-flash, kimi-k3): none. Local native `/api/chat` with
+`logprobs: true` DOES stream per-token logprobs (sampled token only —
+`{token, logprob, bytes}` per chunk); local's OpenAI chat surface
+remains strictly better (top-N), so this matters only as evidence that
+the plumbing exists locally and is stripped server-side on cloud.
+
 Follow-up (same day): Ollama Cloud **does expose `/v1/responses`** (the
 Responses API), and its `output_text` content parts carry a `logprobs`
 field — the scaffolding exists — but the server zeroes the `top_logprobs`
