@@ -250,6 +250,9 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 		DelimiterCandidates: s.Cfg.Compiler.DelimiterCandidates,
 		Alphabets:           s.Cfg.Compiler.LabelAlphabets,
 	}
+	if modelCfg != nil && modelCfg.Thinking != nil && modelCfg.Thinking.CloseTag != "" && !modelCfg.Thinking.WaitClose {
+		opts.CloseTag = modelCfg.Thinking.CloseTag
+	}
 	regKey := registry.OptionsKey(opts)
 	if s.registryDir != "" {
 		if existing, err := registry.Load(s.registryDir, regKey); err == nil && existing != nil {

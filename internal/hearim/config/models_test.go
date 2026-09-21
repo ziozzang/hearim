@@ -117,3 +117,63 @@ model_alias_chains:
 		t.Error("unknown chain provider not rejected")
 	}
 }
+
+func TestThinkingConfigParsing(t *testing.T) {
+	cfg, err := Parse([]byte(`
+providers:
+  - id: p
+    engine: ollama
+    base_url: http://x
+    models:
+      - name: qwen3:32b
+        type: thinking
+        thinking:
+          disable_field: think
+          disable_value: false
+          close_tag: "</think>"
+      - name: r1-style:14b
+        type: thinking
+        thinking:
+          close_tag: "</think>"
+          wait_close: true
+          max_think_tokens: 512
+model_aliases:
+  m: p:qwen3:32b
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := cfg.Providers[0].Models.Find("qwen3:32b")
+	if q == nil || q.Thinking == nil {
+		t.Fatal("thinking config lost")
+	}
+	if q.Thinking.DisableField != "think" || q.Thinking.DisableValue != false {
+		t.Errorf("disable = %+v", q.Thinking)
+	}
+	if q.Thinking.CloseTag != "</think>" || q.Thinking.WaitClose {
+		t.Errorf("close tag config = %+v", q.Thinking)
+	}
+	r := cfg.Providers[0].Models.Find("r1-style:14b")
+	if r.Thinking.EffectiveMaxThinkTokens() != 512 {
+		t.Errorf("max think tokens = %d", r.Thinking.EffectiveMaxThinkTokens())
+	}
+	if !r.Thinking.WaitClose {
+		t.Error("wait_close lost")
+	}
+
+	// disable_value without disable_field is rejected.
+	if _, err := Parse([]byte(`
+providers:
+  - id: p
+    engine: ollama
+    base_url: http://x
+    models:
+      - name: m
+        thinking:
+          disable_value: true
+model_aliases:
+  a: p:m
+`)); err == nil {
+		t.Error("disable_value without field should be rejected")
+	}
+}

@@ -271,6 +271,46 @@ models:
   critical fields (`logprobs`, `max_tokens`, sampler identity, ...) are
   protected and cannot be overridden.
 
+### Thinking models (`<think>` handling)
+
+Model cards document how (and whether) a model's reasoning can be turned
+off; hearim maps that onto three techniques, configured per model:
+
+```yaml
+models:
+  - name: qwen3:32b
+    type: thinking
+    thinking:
+      disable_field: think          # model-card control, applied verbatim
+      disable_value: false          # (e.g. reasoning_effort: "none")
+      close_tag: "</think>"         # preload technique (exact path)
+  - name: r1-style:14b
+    type: thinking
+    thinking:
+      close_tag: "</think>"
+      wait_close: true              # scan technique (approximate)
+      max_think_tokens: 512
+```
+
+1. **disable** — the card's own switch (`think: false`,
+   `reasoning_effort: "none", ...) is applied to every upstream request,
+   overriding the engine default.
+2. **close-tag preload** — for models that always open a `<think>` block,
+   the closing tag is preloaded right after the answer marker
+   (`...</answer-label>\n</think>\n`), so the very next token is the answer
+   label. This keeps the exact single-decode-position semantics: the token
+   label registry probes boundaries in this exact post-tag context.
+3. **wait-close scan** — when preloading is not possible: generate through
+   the reasoning block (bounded by `max_think_tokens`, default 256) and read
+   the logprob distribution at the first position **after** `</think>`.
+   Marked `x-jev-scoring-method: wait-close-tag`. This is approximate —
+   the distribution is conditioned on the sampled reasoning text — so
+   calibration profiles treat it as its own mode. If the block never
+   closes, the question fails rather than scoring a reasoning token.
+
+Without a `thinking` block, `type: thinking` models simply have no exact
+chat route (TODO.md §3.4) unless the engine can fully disable reasoning.
+
 ### Vision (VLM) image inputs
 
 State objects may declare images via top-level `image` (single URL) or

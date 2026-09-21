@@ -31,6 +31,14 @@ type Route struct {
 	ModelCfg *config.ModelConfig
 }
 
+// ModelCfgThinking returns the model's thinking configuration, if any.
+func (r Route) ModelCfgThinking() *config.ThinkingConfig {
+	if r.ModelCfg == nil {
+		return nil
+	}
+	return r.ModelCfg.Thinking
+}
+
 // QuestionResult carries one question's answer plus diagnostics.
 type QuestionResult struct {
 	ID               string
@@ -116,7 +124,17 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 			len(q.Candidates), route.Registry.MaxExactCandidates)
 	}
 
-	prompt := q.PromptPrefix + q.PromptSuffix + route.Registry.Delimiter
+	// <think> handling (TODO.md §3.4 technique, model-card driven):
+	// preload mode appends the close tag to the prompt so the very next
+	// token is the label; wait-close mode instead generates through the
+	// reasoning block and scores the position after the tag (approximate).
+	thinking := route.ModelCfgThinking()
+	preloadTag := ""
+	if thinking != nil && thinking.CloseTag != "" && !thinking.WaitClose {
+		preloadTag = thinking.CloseTag
+	}
+
+	prompt := q.PromptPrefix + q.PromptSuffix + preloadTag + route.Registry.Delimiter
 	res := &QuestionResult{ID: q.ID}
 	var attempts []string
 
@@ -126,6 +144,18 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	var method, space string
 	var usage provider.NextTokenScoreResult
 
+	chatMsgs := route.Adapter.RenderChat(plan, qi)
+	if preloadTag != "" && len(chatMsgs) > 0 {
+		// Append the close tag to the last message content (string concat,
+		// or an extra text part for multimodal content).
+		last := chatMsgs[len(chatMsgs)-1]
+		if s, ok := last.Content.(string); ok {
+			chatMsgs[len(chatMsgs)-1].Content = s + preloadTag
+		} else if parts, ok := last.Content.([]map[string]any); ok {
+			chatMsgs[len(chatMsgs)-1].Content = append(parts, map[string]any{"type": "text", "text": preloadTag})
+		}
+	}
+
 	scoreReq := provider.NextTokenScoreRequest{
 		Model: provider.ModelIdentity{
 			Provider: route.ProviderID,
@@ -133,11 +163,22 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		},
 		Endpoint:            route.Endpoint,
 		PromptText:          prompt,
-		ChatMessages:        route.Adapter.RenderChat(plan, qi),
+		ChatMessages:        chatMsgs,
 		CandidateTokenTexts: texts,
 		Temperature:         e.CompilerCfg.Temperature,
 		TopP:                e.CompilerCfg.TopP,
 		NoReasoning:         route.Endpoint == config.EndpointChatCompletion,
+	}
+	if thinking != nil {
+		if thinking.DisableField != "" {
+			scoreReq.ReasoningField = thinking.DisableField
+			scoreReq.ReasoningValue = thinking.DisableValue
+		}
+		if thinking.WaitClose && thinking.CloseTag != "" {
+			scoreReq.WaitClose = true
+			scoreReq.CloseTag = thinking.CloseTag
+			scoreReq.MaxOutputTokens = thinking.EffectiveMaxThinkTokens()
+		}
 	}
 
 	tryScore := func(constrain bool) (*provider.NextTokenScoreResult, error) {
@@ -184,7 +225,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		}
 	}
 
-	if logprobs == nil && caps.PromptTokenLogprobs && bound {
+	if logprobs == nil && caps.PromptTokenLogprobs && bound && !scoreReq.WaitClose {
 		// §7.3 step 4 / §3.11 strategy 3: teacher-forced label scoring for
 		// stable single-token labels.
 		out, err := e.teacherForcedLabels(ctx, plan, qi, route, ids, texts)
@@ -206,7 +247,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		}
 	}
 
-	if logprobs == nil && e.ScoringCfg.ChoiceTextMode != "disabled" && caps.PromptTokenLogprobs {
+	if logprobs == nil && e.ScoringCfg.ChoiceTextMode != "disabled" && caps.PromptTokenLogprobs && !scoreReq.WaitClose {
 		out, err := e.choiceText(ctx, plan, qi, route)
 		attempts = append(attempts, "choice-text")
 		if err == nil {
@@ -274,7 +315,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 // (TODO.md §12.2 parity requirement).
 func (e *Evaluator) teacherForcedLabels(ctx context.Context, plan *compile.EvaluationPlan, qi int, route Route, ids []int, texts []string) (*provider.NextTokenScoreResult, error) {
 	q := plan.Questions[qi]
-	prefix := q.PromptPrefix + q.PromptSuffix + route.Registry.Delimiter
+	prefix := q.PromptPrefix + q.PromptSuffix + route.Registry.CloseTag + route.Registry.Delimiter
 	out := &provider.NextTokenScoreResult{
 		CandidateLogprobs: map[int]float64{},
 		ScoringMethod:     "teacher-forced-label",

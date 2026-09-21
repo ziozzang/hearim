@@ -163,6 +163,41 @@ type ModelConfig struct {
 	Name        string         `yaml:"name" json:"name"`
 	Type        string         `yaml:"type" json:"type,omitempty"`
 	ExtraParams map[string]any `yaml:"extra_params" json:"extra_params,omitempty"`
+	// Thinking carries the model-card-documented reasoning behavior: how to
+	// disable it, and how to handle <think>-style output when it cannot be
+	// disabled. See ThinkingConfig.
+	Thinking *ThinkingConfig `yaml:"thinking" json:"thinking,omitempty"`
+}
+
+// ThinkingConfig maps what a model card documents about reasoning control
+// onto hearim's evaluation routes (TODO.md §3.4):
+//
+//	disable_field/disable_value — the request field that turns reasoning
+//	  off (e.g. think: false, reasoning_effort: "none"). Applied verbatim
+//	  to upstream requests; overrides the engine default.
+//	close_tag — models that always open a <think> block get the closing tag
+//	  PRELOADED after the answer marker (e.g. "</think>"), so the very next
+//	  token is the answer label. Exact path: the label position is still a
+//	  single decode position.
+//	wait_close — for models where preloading is not possible: generate
+//	  through the reasoning block (bounded by max_think_tokens) and read
+//	  the logprob distribution at the first position AFTER the closing tag.
+//	  Approximate: that distribution is conditioned on the sampled
+//	  reasoning text, and the response is marked accordingly.
+type ThinkingConfig struct {
+	DisableField   string `yaml:"disable_field" json:"disable_field"`
+	DisableValue   any    `yaml:"disable_value" json:"disable_value"`
+	CloseTag       string `yaml:"close_tag" json:"close_tag"`
+	WaitClose      bool   `yaml:"wait_close" json:"wait_close"`
+	MaxThinkTokens int    `yaml:"max_think_tokens" json:"max_think_tokens"`
+}
+
+// EffectiveMaxThinkTokens returns the generation bound for wait-close mode.
+func (t *ThinkingConfig) EffectiveMaxThinkTokens() int {
+	if t == nil || t.MaxThinkTokens <= 0 {
+		return 256
+	}
+	return t.MaxThinkTokens
 }
 
 // ModelConfigs accepts either a plain string list (backward compatible) or
@@ -196,6 +231,14 @@ func (m *ModelConfigs) UnmarshalYAML(node *yaml.Node) error {
 			case "", "chat", "thinking", "reasoning", "vision":
 			default:
 				return fmt.Errorf("config: model %q: unknown type %q (chat|thinking|vision)", mc.Name, mc.Type)
+			}
+			if mc.Thinking != nil {
+				if mc.Thinking.CloseTag == "" && mc.Thinking.WaitClose && mc.Type != "" && mc.Type != "thinking" && mc.Type != "reasoning" {
+					return fmt.Errorf("config: model %q: thinking.wait_close requires a thinking/reasoning model type", mc.Name)
+				}
+				if mc.Thinking.DisableValue != nil && mc.Thinking.DisableField == "" {
+					return fmt.Errorf("config: model %q: thinking.disable_value requires disable_field", mc.Name)
+				}
 			}
 			out = append(out, mc)
 		default:

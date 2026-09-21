@@ -39,6 +39,14 @@ providers:
       - deepseek-v4.1-flash
       - name: gpt-oss:20b
         type: thinking          # low/medium/high only on Ollama: no exact chat route
+      - name: qwen3:32b
+        type: thinking
+        thinking:               # model-card-driven reasoning control:
+          disable_field: think  #   the documented off-switch, applied verbatim
+          disable_value: false
+          close_tag: "</think>" #   preload the close tag: next token = label
+          # wait_close: true    #   alternative: scan until </think> (approximate)
+          # max_think_tokens: 512
     endpoint_preference: [completions, chat_completions]
     extra_params: {}            # additional JSON merged into upstream requests
 

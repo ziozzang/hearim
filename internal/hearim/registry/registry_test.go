@@ -253,3 +253,26 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Errorf("missing registry should return nil,nil: %v %v", none, err)
 	}
 }
+
+func TestCloseTagParticipatesInProbingAndKey(t *testing.T) {
+	f := &fakeAdapter{tokenizerWorks: true}
+	base, err := Build(context.Background(), f, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := testOptions()
+	opts.CloseTag = "</think>"
+	tagged, err := Build(context.Background(), f, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tagged.CloseTag != "</think>" {
+		t.Errorf("close tag = %q", tagged.CloseTag)
+	}
+	if tagged.Key() == base.Key() {
+		t.Error("close tag must participate in the persistence key")
+	}
+	if OptionsKey(opts) == OptionsKey(testOptions()) {
+		t.Error("options key must differ with close tag")
+	}
+}

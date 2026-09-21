@@ -38,6 +38,7 @@ type Registry struct {
 	ChatTemplateHash     string                  `json:"chat_template_hash,omitempty"`
 	ReasoningProfileHash string                  `json:"reasoning_profile_hash,omitempty"`
 	TemplateVersion      string                  `json:"template_version"`
+	CloseTag             string                  `json:"close_tag,omitempty"`
 	Delimiter            string                  `json:"delimiter"`
 	BoundaryPolicy       string                  `json:"boundary_policy"` // exact-prefix-plus-one | probe-only
 	Alphabets            map[string][]LabelEntry `json:"alphabets"`
@@ -61,6 +62,10 @@ type Options struct {
 	TemplateVersion   string
 	// PromptBase is the compiled prompt ending at the answer marker.
 	PromptBase string
+	// CloseTag (e.g. "</think>") is preloaded between the answer marker and
+	// the delimiter for <think>-style models: labels are then scored in the
+	// post-thinking context (TODO.md §3.4 technique).
+	CloseTag string
 	// DelimiterCandidates tried in order (compiler config).
 	DelimiterCandidates []string
 	// Alphabets: ordered label sets; names are assigned as numeric,
@@ -98,6 +103,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		Endpoint:          opts.Endpoint,
 		ChatTemplateHash:  opts.ChatTemplateHash,
 		TemplateVersion:   opts.TemplateVersion,
+		CloseTag:          opts.CloseTag,
 		Alphabets:         map[string][]LabelEntry{},
 		BoundaryPolicy:    "probe-only",
 		BuiltAt:           time.Now().UTC().Format(time.RFC3339),
@@ -118,9 +124,10 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 	if tokenizeWorks {
 		reg.BoundaryPolicy = "exact-prefix-plus-one"
 		// Find the first delimiter where every label of some alphabet is a
-		// stable single token (§6.1 steps 6-9).
+		// stable single token (§6.1 steps 6-9). Probing happens in the
+		// post-close-tag context so verified boundaries transfer exactly.
 		for _, delim := range opts.DelimiterCandidates {
-			prefix := opts.PromptBase + delim
+			prefix := opts.PromptBase + opts.CloseTag + delim
 			base, err := adpt.Tokenize(ctx, opts.BackendModel, prefix)
 			if err != nil {
 				continue
@@ -163,7 +170,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		// Priority 3: limited inference probe — ask the backend to score the
 		// labels at the answer position; entries returning the label text
 		// exactly are single tokens in this context.
-		prefix := opts.PromptBase + opts.DelimiterCandidates[0]
+		prefix := opts.PromptBase + opts.CloseTag + opts.DelimiterCandidates[0]
 		var texts []string
 		for _, alphabet := range opts.Alphabets {
 			for _, label := range alphabet {
@@ -335,6 +342,7 @@ func OptionsKey(opts Options) string {
 	if len(opts.DelimiterCandidates) > 0 {
 		r.Delimiter = opts.DelimiterCandidates[0]
 	}
+	r.CloseTag = opts.CloseTag
 	return r.Key()
 }
 
@@ -350,6 +358,8 @@ func (r *Registry) Key() string {
 	h.Write([]byte(r.TemplateVersion))
 	h.Write([]byte{0})
 	h.Write([]byte(r.Endpoint))
+	h.Write([]byte{0})
+	h.Write([]byte(r.CloseTag))
 	h.Write([]byte{0})
 	h.Write([]byte(r.Delimiter))
 	return hex.EncodeToString(h.Sum(nil))[:24]

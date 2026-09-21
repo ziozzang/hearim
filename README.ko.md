@@ -254,6 +254,45 @@ models:
   엔진 고유 노브나 게이트웨이 전용 파라미터. 정확성에 중요한 필드
   (`logprobs`, `max_tokens`, 샘플러 값 등)는 보호되어 덮어쓸 수 없다.
 
+## thinking 모델 (`<think>` 처리)
+
+모델 카드에는 reasoning을 끄는 방법이 문서되어 있다. hearim은 이를 모델별
+세 가지 기법으로 매핑한다:
+
+```yaml
+models:
+  - name: qwen3:32b
+    type: thinking
+    thinking:
+      disable_field: think          # 모델 카드의 제어를 그대로 적용
+      disable_value: false          # (예: reasoning_effort: "none")
+      close_tag: "</think>"         # 프리로드 기법(정확 경로)
+  - name: r1-style:14b
+    type: thinking
+    thinking:
+      close_tag: "</think>"
+      wait_close: true              # 스캔 기법(근사)
+      max_think_tokens: 512
+```
+
+1. **disable** — 카드가 알려주는 스위치(`think: false`,
+   `reasoning_effort: "none"` 등)를 모든 업스트림 요청에 적용하며 엔진
+   기본값을 대체한다.
+2. **close-tag 프리로드** — 항상 `<think>` 블록을 여는 모델에게는 답변
+   마커 바로 뒤에 닫는 태그를 미리 넣는다
+   (`...</answer-label>\n</think>\n`). 그러면 다음 토큰이 곧 답 라벨이어서
+   정확한 단일 디코드 위치 의미론이 유지된다. token label registry도 이
+   태그 이후 문맥에서 경계를 검증한다.
+3. **wait-close 스캔** — 프리로드가 불가능할 때: reasoning 블록을
+   `max_think_tokens`(기본 256)까지 생성하면서 `</think>` 이후 첫 위치의
+   logprob 분포를 읽는다. `x-jev-scoring-method: wait-close-tag`로 표시된다.
+   이 분포는 샘플링된 reasoning 텍스트에 조건화되므로 근사이며,
+   calibration profile도 별도 모드로 취급한다. 블록이 닫히지 않으면
+   reasoning 토큰을 채점하는 대신 실패한다.
+
+`thinking` 블록이 없으면 `type: thinking` 모델은 엔진이 reasoning을 완전히
+끌 수 없는 한 exact chat 경로가 없다(TODO.md §3.4).
+
 ## 비전(VLM) 이미지 입력
 
 state 객체는 최상위 `image`(단일 URL) 또는 `images`(배열)로 이미지를

@@ -99,6 +99,19 @@ type NextTokenScoreRequest struct {
 	CacheKey string
 	// NoReasoning forces the model's reasoning off on chat routes.
 	NoReasoning bool
+	// ReasoningField/ReasoningValue override the engine-default reasoning
+	// control with the model-card-documented one (e.g. field "reasoning_effort",
+	// value "none"; field "think", value false).
+	ReasoningField string
+	ReasoningValue any
+	// WaitClose scans a bounded generation for CloseTag and scores the first
+	// position AFTER it (TODO.md §3.4 <think> technique, approximate: the
+	// distribution is conditioned on the sampled reasoning text).
+	WaitClose bool
+	// CloseTag names the reasoning close marker to scan for (e.g. "</think>").
+	CloseTag string
+	// MaxOutputTokens bounds WaitClose generation (0 = adapter default).
+	MaxOutputTokens int
 	// ConstrainToCandidates applies a vocab restriction when supported;
 	// the result is then marked post-mask (§7.3 step 5).
 	ConstrainToCandidates bool

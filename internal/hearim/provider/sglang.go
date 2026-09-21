@@ -79,6 +79,9 @@ func (a *SGLangAdapter) Tokenize(ctx context.Context, model, text string) ([]int
 // ScoreNextToken calls /generate with token_ids_logprob for direct candidate
 // ID scoring (TODO.md §3.9 request shape).
 func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	if req.WaitClose {
+		return nil, fmt.Errorf("provider: sglang: thinking.wait_close unsupported; use thinking.close_tag preload")
+	}
 	input := any(req.PromptText)
 	if len(req.PromptTokenIDs) > 0 {
 		input = req.PromptTokenIDs

@@ -24,6 +24,8 @@ type evalFake struct {
 	missing    bool      // next-token scoring fails wholesale
 	noTF       bool      // teacher-forced single-label path unsupported
 	calls      int
+	tfCalls    int
+	lastReq    *provider.NextTokenScoreRequest
 }
 
 func (f *evalFake) ID() string                { return "fake-vllm" }
@@ -52,6 +54,8 @@ func (f *evalFake) Tokenize(ctx context.Context, model, text string) ([]int, err
 
 func (f *evalFake) ScoreNextToken(ctx context.Context, req provider.NextTokenScoreRequest) (*provider.NextTokenScoreResult, error) {
 	f.calls++
+	reqCopy := req
+	f.lastReq = &reqCopy
 	if f.missing {
 		return nil, fmt.Errorf("upstream 500")
 	}
@@ -83,6 +87,7 @@ func (f *evalFake) ScoreNextToken(ctx context.Context, req provider.NextTokenSco
 }
 
 func (f *evalFake) ScoreContinuations(ctx context.Context, req provider.ContinuationScoreRequest) (*provider.ContinuationScoreResult, error) {
+	f.tfCalls++
 	if f.noTF && len(req.Continuations) == 1 {
 		return nil, fmt.Errorf("single-label teacher forcing rejected")
 	}
@@ -379,4 +384,75 @@ func TestParityNextTokenVsTeacherForced(t *testing.T) {
 	}
 	// Softmax sanity identical to scoring package.
 	_ = scoring.Softmax([]float64{math.Log(0.3), math.Log(0.7)})
+}
+
+func TestThinkingCloseTagPreload(t *testing.T) {
+	cfg := testConfig(t)
+	fake := &evalFake{logprobs: []float64{-0.5, -1.5}}
+	route := buildRoute(t, fake, cfg)
+	thinking := &config.ThinkingConfig{CloseTag: "</think>"}
+	route.ModelCfg = &config.ModelConfig{Name: "m", Type: "thinking", Thinking: thinking}
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": "s",
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	res, err := ev.EvaluateQuestion(context.Background(), plan, 0, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	na := res.Answer.(*jev.NoulAnswer)
+	if na.Noul <= 0 || na.Noul >= 1 {
+		t.Errorf("noul = %v", na.Noul)
+	}
+}
+
+func TestThinkingDisableOverrideApplied(t *testing.T) {
+	cfg := testConfig(t)
+	fake := &evalFake{logprobs: []float64{-0.3, -0.9}}
+	route := buildRoute(t, fake, cfg)
+	route.ModelCfg = &config.ModelConfig{Name: "m", Thinking: &config.ThinkingConfig{
+		DisableField: "reasoning_effort",
+		DisableValue: "none",
+	}}
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": "s",
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	if _, err := ev.EvaluateQuestion(context.Background(), plan, 0, route); err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastReq == nil || fake.lastReq.ReasoningField != "reasoning_effort" || fake.lastReq.ReasoningValue != "none" {
+		t.Errorf("override not applied: %+v", fake.lastReq)
+	}
+}
+
+func TestThinkingWaitCloseSkipsTeacherForced(t *testing.T) {
+	cfg := testConfig(t)
+	// Next-token scoring fails wholesale; only wait-close scoring could
+	// succeed, but the fake's ScoreNextToken errors -> strict failure must
+	// come from scoring itself, NOT from a teacher-forced attempt that would
+	// mis-score a wait-close model.
+	fake := &evalFake{missing: true}
+	route := buildRoute(t, fake, cfg)
+	route.ModelCfg = &config.ModelConfig{Name: "m", Type: "thinking", Thinking: &config.ThinkingConfig{
+		CloseTag:  "</think>",
+		WaitClose: true,
+	}}
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": "s",
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	_, err := ev.EvaluateQuestion(context.Background(), plan, 0, route)
+	if err == nil {
+		t.Fatal("expected failure with failing next-token scoring")
+	}
+	for _, a := range []string{} {
+		_ = a
+	}
+	if fake.tfCalls != 0 {
+		t.Errorf("teacher-forced must be skipped for wait-close models, calls = %d", fake.tfCalls)
+	}
 }

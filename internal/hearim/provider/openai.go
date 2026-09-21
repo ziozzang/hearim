@@ -256,10 +256,19 @@ func matchByText(entries []openaiLogprobEntry, text string) (float64, bool) {
 func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScoreRequest,
 	model string, selectedField string, extras map[string]any) (*NextTokenScoreResult, error) {
 
+	maxTokens := 1
+	method0 := "" // set when wait-close scanning applies
+	if req.WaitClose {
+		maxTokens = req.MaxOutputTokens
+		if maxTokens <= 0 {
+			maxTokens = 256
+		}
+		method0 = "wait-close-tag"
+	}
 	body := openaiCompletionsRequest{
 		Model:       model,
 		Prompt:      promptValue(req),
-		MaxTokens:   1,
+		MaxTokens:   maxTokens,
 		Temperature: tempOrOne(req.Temperature),
 		TopP:        topPOrOne(req.TopP),
 		Stream:      false,
@@ -310,7 +319,18 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 	if len(positions) == 0 {
 		return nil, fmt.Errorf("provider: empty top_logprobs")
 	}
-	logprobs, all := matchCandidates(positions[0], req.CandidateTokenIDs, req.CandidateTokenTexts)
+	pos := 0
+	if req.WaitClose {
+		pos, err = scanAfterCloseTag(out.Choices[0].Logprobs.Tokens, req.CloseTag)
+		if err != nil {
+			return nil, err
+		}
+		method = method0
+	}
+	if pos >= len(positions) {
+		return nil, fmt.Errorf("provider: no logprob position %d (have %d)", pos, len(positions))
+	}
+	logprobs, all := matchCandidates(positions[pos], req.CandidateTokenIDs, req.CandidateTokenTexts)
 	res := &NextTokenScoreResult{
 		CandidateLogprobs:    logprobs,
 		AllCandidatesPresent: all,
@@ -322,6 +342,22 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 		ProbabilitySpace:     space,
 	}
 	return res, nil
+}
+
+// scanAfterCloseTag returns the index of the first position AFTER the
+// closing tag appears in the token stream (TODO.md §3.4 <think> handling).
+func scanAfterCloseTag(tokens []string, closeTag string) (int, error) {
+	if closeTag == "" {
+		return 0, nil
+	}
+	cum := ""
+	for i, tok := range tokens {
+		cum += tok
+		if strings.Contains(cum, closeTag) {
+			return i + 1, nil
+		}
+	}
+	return 0, fmt.Errorf("provider: reasoning block never closed (no %q in %d tokens)", closeTag, len(tokens))
 }
 
 func cachedTokens(out openaiResponse) int {
@@ -377,10 +413,19 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 	if k <= 0 {
 		k = 20
 	}
+	maxTokens := 1
+	method := "top-k"
+	if req.WaitClose {
+		maxTokens = req.MaxOutputTokens
+		if maxTokens <= 0 {
+			maxTokens = 256
+		}
+		method = "wait-close-tag"
+	}
 	body := openaiChatRequest{
 		Model:       model,
 		Messages:    msgs,
-		MaxTokens:   1,
+		MaxTokens:   maxTokens,
 		Temperature: tempOrOne(req.Temperature),
 		TopP:        topPOrOne(req.TopP),
 		Logprobs:    true,
@@ -388,7 +433,11 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		Stream:      false,
 		Extra:       map[string]any{},
 	}
-	if req.NoReasoning {
+	switch {
+	case req.ReasoningField != "":
+		// Model-card-documented control wins (e.g. reasoning_effort: "none").
+		body.Extra[req.ReasoningField] = req.ReasoningValue
+	case req.NoReasoning:
 		// Ollama native-style boolean control; harmless where ignored.
 		body.Extra["think"] = false
 	}
@@ -405,7 +454,23 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		len(out.Choices[0].Logprobs.Content) == 0 {
 		return nil, fmt.Errorf("provider: no logprobs in chat response")
 	}
-	first := out.Choices[0].Logprobs.Content[0]
+	content := out.Choices[0].Logprobs.Content
+	pos := 0
+	if req.WaitClose {
+		toks := make([]string, len(content))
+		for i, c := range content {
+			toks[i] = c.Token
+		}
+		var scanErr error
+		pos, scanErr = scanAfterCloseTag(toks, req.CloseTag)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+	}
+	if pos >= len(content) {
+		return nil, fmt.Errorf("provider: no position after close tag (have %d)", len(content))
+	}
+	first := content[pos]
 	entries := append([]openaiLogprobEntry{}, first.TopLogprobs...)
 	// The sampled token itself is an entry when absent from top_logprobs.
 	present := false
@@ -424,7 +489,7 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		Distribution:         "raw",
 		PromptTokens:         out.Usage.PromptTokens,
 		BackendRequestID:     out.ID,
-		ScoringMethod:        "top-k",
+		ScoringMethod:        method,
 		ProbabilitySpace:     SpaceRaw,
 	}
 	if out.Usage.PromptTokensDetails != nil {

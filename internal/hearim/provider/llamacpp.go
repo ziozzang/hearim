@@ -109,6 +109,9 @@ func firstNonEmpty(ss ...string) string {
 }
 
 func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	if req.WaitClose {
+		return nil, fmt.Errorf("provider: llama.cpp: thinking.wait_close unsupported; use thinking.close_tag preload")
+	}
 	k := req.TopK
 	if k <= 0 {
 		k = 20
