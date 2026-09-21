@@ -323,3 +323,49 @@ func TestInferenceProbeTriesAllDelimiters(t *testing.T) {
 		t.Errorf("expected probes for both delimiters, calls = %d", f.scoreCalls)
 	}
 }
+
+// nSweepFake reveals labels only from TopK>=8 and rejects N>20 with the
+// Ollama-style cap error — the sweep must discover TopN=8 and TopNCap=20.
+type nSweepFake struct{ fakeAdapter }
+
+func (f *nSweepFake) ScoreNextToken(ctx context.Context, req provider.NextTokenScoreRequest) (*provider.NextTokenScoreResult, error) {
+	f.scoreCalls++
+	if req.TopK > 20 {
+		return nil, fmt.Errorf("upstream 400 bad_request: top_logprobs must be between 0 and 20")
+	}
+	out := map[int]float64{}
+	if req.TopK >= 8 {
+		for i := range req.CandidateTokenTexts {
+			out[i] = -float64(i + 1)
+		}
+	}
+	return &provider.NextTokenScoreResult{
+		CandidateLogprobs:    out,
+		AllCandidatesPresent: len(out) == len(req.CandidateTokenTexts),
+		ScoringMethod:        "top-k",
+		ProbabilitySpace:     provider.SpaceRaw,
+	}, nil
+}
+
+func TestSweepDiscoversOptimalNAndCap(t *testing.T) {
+	f := &nSweepFake{}
+	reg, err := Build(context.Background(), f, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.TopN != 8 {
+		t.Errorf("TopN = %d, want 8 (smallest N with all labels)", reg.TopN)
+	}
+	if reg.TopNCap != 20 {
+		t.Errorf("TopNCap = %d, want 20 (parsed from rejection)", reg.TopNCap)
+	}
+}
+
+func TestParseTopNCap(t *testing.T) {
+	if v := parseTopNCap(`upstream 400: top_logprobs must be between 0 and 20`); v != 20 {
+		t.Errorf("cap = %d", v)
+	}
+	if v := parseTopNCap("some other error"); v != 0 {
+		t.Errorf("unrelated error should give 0, got %d", v)
+	}
+}

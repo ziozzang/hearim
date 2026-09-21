@@ -70,8 +70,11 @@ Jev와 회선(wire) 호환일 뿐 TypeSafe 모델과 수치 동일성을 보장�
 
 1. **selected-token-ids** — 후보 token ID의 logprob 직접 요청
    (vLLM `logprob_token_ids`, SGLang `token_ids_logprob`)
-2. **top-k** — top-N logprob를 텍스트/바이트 매칭으로 회수, 누락 시 더 큰
-   N으로 한 번 재시도
+2. **top-k** — top-N logprob를 텍스트/바이트 매칭으로 회수. N은
+   **모델별 자동 튜닝**: 레지스트리가 빌드 시 사다리(4…64)를 스윕해 모든
+   라벨을 회수한 최소 N과 서버의 거부 상한(서버는 초과 N을 클램프가
+   아니라 오류로 거부 — Ollama는 20)을 기록하고, 평가는 그 상한 안에서만
+   확장한다
 3. **teacher-forced-label** — 라벨 토큰의 input-token logprob
    (안정 라벨에서는 next-token logprob와 일치해야 한다)
 4. **constrained-vocab** — grammar / `allowed_token_ids` 마스크. 결과는

@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"hearim/internal/hearim/config"
@@ -45,6 +47,11 @@ type Registry struct {
 	PreferredAlphabet    string                  `json:"preferred_alphabet"`
 	MaxSingleTokenLabels int                     `json:"max_single_token_labels"`
 	MaxExactCandidates   int                     `json:"max_exact_candidates"`
+	// TopN is the smallest top_logprobs request that recovered every label
+	// of the preferred alphabet at the probe context (auto-tuned sweep).
+	// TopNCap is the server's accepted maximum (0 = not discovered).
+	TopN    int `json:"top_n,omitempty"`
+	TopNCap int `json:"top_n_cap,omitempty"`
 	// Verified means the completion probe identified label logprobs (§6.1
 	// step 10).
 	Verified bool   `json:"verified"`
@@ -221,9 +228,104 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 	}
 	reg.MaxSingleTokenLabels = len(reg.Alphabets[reg.PreferredAlphabet])
 
+	// Optimal-N discovery: sweep the top_logprobs ladder to find the
+	// smallest request that recovers every label, and the server's cap
+	// (servers ERROR on oversized N — Ollama: "must be between 0 and 20" —
+	// instead of clamping, so a blind multiply-on-retry just crashes into
+	// the limit).
+	reg.sweepTopN(ctx, adpt, opts)
+
 	// Step 10: completion probe must identify label logprobs.
 	reg.runCompletionProbe(ctx, adpt, opts)
 	return reg, nil
+}
+
+// topNLadder is the sweep order: small values first, bounded by typical
+// server caps. 20 covers Ollama; 32/64 cover permissive servers.
+var topNLadder = []int{4, 8, 10, 16, 20, 32, 64}
+
+// registryLabels returns the preferred alphabet's label strings.
+func registryLabels(r *Registry) []string {
+	out := []string{}
+	for _, e := range r.Alphabets[r.PreferredAlphabet] {
+		out = append(out, e.Label)
+	}
+	return out
+}
+
+// sweepTopN finds the minimal N recovering all labels and the server cap.
+func (r *Registry) sweepTopN(ctx context.Context, adpt provider.Adapter, opts Options) {
+	ids, texts, _ := r.Bind(registryLabels(r))
+	caps := adpt.Capabilities()
+	for _, n := range topNLadder {
+		if caps.MaxTopLogprobs > 0 && n > caps.MaxTopLogprobs*8 {
+			break
+		}
+		res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
+			Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
+			Endpoint:            endpointKind(r.Endpoint),
+			PromptText:          opts.PromptBase + opts.CloseTag + r.Delimiter,
+			CandidateTokenIDs:   ids,
+			CandidateTokenTexts: texts,
+			TopK:                n,
+		})
+		if err != nil {
+			// A rejected N reveals the server cap (parse "between 0 and X"
+			// when present; otherwise the last working N is the cap).
+			r.TopNCap = parseTopNCap(err.Error())
+			if r.TopNCap == 0 {
+				r.TopNCap = prevLadder(n)
+			}
+			break
+		}
+		found := 0
+		for i := range texts {
+			if _, ok := res.CandidateLogprobs[i]; ok {
+				found++
+			}
+		}
+		if found == len(texts) {
+			r.TopN = n
+			if r.TopNCap == 0 {
+				r.TopNCap = caps.MaxTopLogprobs
+			}
+			return
+		}
+	}
+	if r.TopNCap == 0 && caps.MaxTopLogprobs > 0 {
+		r.TopNCap = caps.MaxTopLogprobs
+	}
+}
+
+func prevLadder(n int) int {
+	prev := 0
+	for _, v := range topNLadder {
+		if v >= n {
+			break
+		}
+		prev = v
+	}
+	return prev
+}
+
+// parseTopNCap extracts the cap from server rejections like
+// "top_logprobs must be between 0 and 20".
+func parseTopNCap(msg string) int {
+	for _, marker := range []string{"between 0 and ", "must be between 0 and "} {
+		if i := strings.Index(msg, marker); i >= 0 {
+			rest := msg[i+len(marker):]
+			end := 0
+			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+				end++
+			}
+			if end > 0 {
+				if v, err := strconv.Atoi(rest[:end]); err == nil && v > 0 {
+					return v
+				}
+			}
+		}
+	}
+	return 0
 }
 
 // runCompletionProbe verifies that a real 1-token completion returns

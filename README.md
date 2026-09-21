@@ -73,8 +73,12 @@ Per question, adapters try in order (TODO.md §3.11 / §7.3):
 
 1. **selected-token-ids** — direct candidate token-ID logprob request
    (vLLM `logprob_token_ids`, SGLang `token_ids_logprob`)
-2. **top-k** — top-N logprobs with text/bytes matching, one retry with a
-   larger N
+2. **top-k** — top-N logprobs with text/bytes matching; N is
+   **auto-tuned per model**: the registry sweeps a ladder (4…64) at build
+   time, records the smallest N that recovered every label plus the
+   server's rejection cap (servers error on oversized N — Ollama caps at
+   20 — rather than clamping), and evaluation escalates only within that
+   cap
 3. **teacher-forced-label** — input-token logprob of the label token
    (must agree with the next-token logprob on stable labels)
 4. **constrained-vocab** — grammar / `allowed_token_ids` mask; the result is

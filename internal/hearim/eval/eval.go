@@ -188,11 +188,23 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		}
 	}
 
+	// Auto-tuned N (§7.3): the registry swept the top_logprobs ladder at
+	// build time; use the smallest N that recovered every label instead of
+	// the engine default, and bound escalation by the discovered server cap.
+	topN := route.Registry.TopN
+	if topN <= 0 {
+		topN = caps.MaxTopLogprobs
+	}
+	topCap := route.Registry.TopNCap
+	if topCap <= 0 {
+		topCap = caps.MaxTopLogprobs * 8
+	}
+
 	tryScore := func(constrain bool) (*provider.NextTokenScoreResult, error) {
 		req := scoreReq
 		req.CandidateTokenIDs = ids
 		req.ConstrainToCandidates = constrain
-		req.TopK = caps.MaxTopLogprobs
+		req.TopK = topN
 		return route.Adapter.ScoreNextToken(ctx, req)
 	}
 
@@ -217,21 +229,24 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		// top-k pass.
 		req := scoreReq
 		req.CandidateTokenIDs = ids
-		req.TopK = caps.MaxTopLogprobs
+		req.TopK = topN
 		out, err := route.Adapter.ScoreNextToken(ctx, req)
-		attempts = append(attempts, "top-k")
+		attempts = append(attempts, fmt.Sprintf("top-k(n=%d)", topN))
 		if err == nil {
 			logprobs, method, space, usage = out.CandidateLogprobs, out.ScoringMethod, out.ProbabilitySpace, *out
 			if !out.AllCandidatesPresent {
-				// §7.3 step 3: one retry with a larger N.
+				// §7.3 step 3: one retry with a larger N, bounded by the
+				// discovered server cap (servers reject oversized N outright).
 				retry := req
 				retry.TopK = req.TopK * e.CompilerCfg.RetryTopLogprobsFactor
-				if retry.TopK > caps.MaxTopLogprobs*8 {
-					retry.TopK = caps.MaxTopLogprobs * 8
+				if retry.TopK > topCap {
+					retry.TopK = topCap
 				}
-				if out2, err2 := route.Adapter.ScoreNextToken(ctx, retry); err2 == nil && out2.AllCandidatesPresent {
-					logprobs, method, space, usage = out2.CandidateLogprobs, out2.ScoringMethod, out2.ProbabilitySpace, *out2
-					attempts = append(attempts, "top-k-retry")
+				if retry.TopK > req.TopK {
+					if out2, err2 := route.Adapter.ScoreNextToken(ctx, retry); err2 == nil && out2.AllCandidatesPresent {
+						logprobs, method, space, usage = out2.CandidateLogprobs, out2.ScoringMethod, out2.ProbabilitySpace, *out2
+						attempts = append(attempts, fmt.Sprintf("top-k-retry(n=%d)", retry.TopK))
+					}
 				}
 			}
 		} else {
