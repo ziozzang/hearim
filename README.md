@@ -12,6 +12,14 @@ It never uses generated text as the basis of an answer: one question maps to
 exactly one next-token scoring call, and when the label fast path is not
 possible it teacher-forces the label or the full choice continuation instead.
 
+### Paper
+
+**[Why this works — paper/paper.pdf](paper/paper.pdf)** (source:
+[paper.tex](paper/paper.tex)) — the conditional softmax reading, the
+tokenization boundary invariant, why reasoning tokens are a chat-surface
+artifact rather than a capability gap, the silent failure modes with measured
+examples, and a survey of where the logprob surface exists across providers.
+
 ### The name
 
 **헤아림** is the nominal form of the Korean verb **헤아리다**, which carries
@@ -530,4 +538,9 @@ labeled data (`hearim bench`).
 
 ## License
 
-TBD
+MIT with a source-attribution proviso — see [LICENSE](LICENSE). Use, modify,
+and redistribute freely, including forks and rebranded builds, provided the
+original source is presented to end users (at minimum
+`hearim — https://github.com/ziozzang/hearim`) in version/help output and in
+top-level documentation. `hearim version` and the serve startup banner carry
+this attribution in this build.

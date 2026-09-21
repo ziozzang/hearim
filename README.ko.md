@@ -11,6 +11,13 @@ OpenAI 호환 서버) 위에 TypeSafe AI **Jev**의 `POST /v1/systemone` 계약�
 next-token scoring 호출이며, 라벨 fast path가 불가능하면 라벨 또는 선택지
 전체를 teacher-forcing 한다.
 
+### 논문
+
+**[왜 동작하는가 — paper/paper.pdf](paper/paper.pdf)** (소스:
+[paper.tex](paper/paper.tex)) — 조건부 softmax 판독, 토큰화 경계 불변식,
+reasoning 토큰이 능력 부족이 아니라 chat 서피스 아티팩트인 이유, 실측 예시와
+함께한 조용한 실패 모드, 그리고 프로바이더별 logprob 표면 존재 여부 조사.
+
 ### 이름의 뜻
 
 **헤아림**은 동사 **헤아리다**의 명사형으로, 두 가지 얽힌 뜻을 갖는다:
@@ -508,4 +515,8 @@ confidence, route별 calibration profile은 hearim 자체의 문서화된
 
 ## 라이선스
 
-미정
+출처 표시 단서가 붙은 MIT — [LICENSE](LICENSE) 참고. fork·리브랜딩 빌드를
+포함해 자유롭게 사용·수정·재배포할 수 있으나, 최소한
+`hearim — https://github.com/ziozzang/hearim` 형태의 원전 출처를
+버전/도움말 출력과 최상위 문서에 표시해야 한다. 이 빌드는 `hearim version`과
+serve 시작 배너가 해당 표기를 출력한다.

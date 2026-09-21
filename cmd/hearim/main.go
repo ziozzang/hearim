@@ -34,6 +34,10 @@ var version = "0.6.3"
 // updateRepo is the GitHub repository self-update pulls release builds from.
 const updateRepo = "ziozzang/hearim"
 
+// homeURL is the original-source attribution the license requires forks to
+// present in version/help output (see LICENSE).
+const homeURL = "https://github.com/ziozzang/hearim"
+
 func main() {
 	// Background update notice (hftools pattern): terminal-only, throttled
 	// to one network check per day, disabled via HEARIM_NO_UPDATE_CHECK.
@@ -57,7 +61,7 @@ func main() {
 	case "update":
 		err = cmdUpdate(os.Args[2:])
 	case "version":
-		fmt.Println("hearim", version)
+		printVersion()
 	default:
 		usage()
 		os.Exit(2)
@@ -167,7 +171,17 @@ commands:
   bench   run a labeled JSONL corpus benchmark
   update  replace this binary with the latest GitHub release build
   version print version
+
+source:  `+homeURL+`
+license: MIT with source attribution (see LICENSE)
 `)
+}
+
+// printVersion emits the original-source attribution the license requires.
+func printVersion() {
+	fmt.Printf("hearim %s (%s/%s, %s)\n", version, runtime.GOOS, runtime.GOARCH, runtime.Version())
+	fmt.Println(homeURL)
+	fmt.Println("license: MIT with source attribution — hearim is the original source")
 }
 
 func commonFlags(fs *flag.FlagSet) (configPath *string, logLevel *string, logJSON *bool) {
@@ -241,7 +255,8 @@ func cmdServe(args []string) error {
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("hearim listening", "addr", cfg.Server.Addr,
-			"public_endpoint", cfg.Gateway.PublicEndpoint)
+			"public_endpoint", cfg.Gateway.PublicEndpoint,
+			"version", version, "source", homeURL)
 		errCh <- httpSrv.ListenAndServe()
 	}()
 
