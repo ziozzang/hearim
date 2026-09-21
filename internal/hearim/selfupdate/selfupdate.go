@@ -180,12 +180,12 @@ func versionFields(v string) []int {
 
 // Checksums downloads and parses the release's SHA256SUMS asset into a map
 // of artifact name -> lowercase hex SHA-256.
-func Checksums(ctx context.Context, client *http.Client, rel *Release) (map[string]string, error) {
+func Checksums(ctx context.Context, client *http.Client, rel *Release, token string) (map[string]string, error) {
 	asset, ok := rel.FindAsset("SHA256SUMS")
 	if !ok {
 		return nil, fmt.Errorf("release %s has no SHA256SUMS asset", rel.TagName)
 	}
-	body, err := download(ctx, client, asset.URL, 1<<20)
+	body, err := download(ctx, client, asset.URL, 1<<20, token)
 	if err != nil {
 		return nil, err
 	}
@@ -202,12 +202,17 @@ func Checksums(ctx context.Context, client *http.Client, rel *Release) (map[stri
 // DownloadVerified fetches asset into a temp file in dir, checks its SHA-256
 // against wantSHA, and returns the temp file path. The caller renames it
 // into place (or removes it). On any error the temp file is cleaned up.
-func DownloadVerified(ctx context.Context, client *http.Client, asset Asset, wantSHA, dir string) (string, error) {
+func DownloadVerified(ctx context.Context, client *http.Client, asset Asset, wantSHA, dir, token string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "hearim-selfupdate")
+	// Release asset downloads on private repositories need the token too
+	// (browser_download_url is not pre-signed there).
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -277,12 +282,15 @@ func ResolveExecutable() (string, error) {
 	return exe, nil
 }
 
-func download(ctx context.Context, client *http.Client, url string, limit int64) ([]byte, error) {
+func download(ctx context.Context, client *http.Client, url string, limit int64, token string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "hearim-selfupdate")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

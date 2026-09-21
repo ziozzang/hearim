@@ -75,6 +75,9 @@ var StderrIsTerminal = func() bool { return stderrIsTerminal() }
 // offline machines are never slowed: the goroutine soft-fails and writes
 // nothing. A successful check refreshes the cache the notice reads.
 func StartNotifyRefresh(cfg NotifyConfig) {
+	if !NotifyEligible(os.Args[1:]) {
+		return
+	}
 	path := cachePathOrDefault(cfg)
 	if path == "" {
 		return

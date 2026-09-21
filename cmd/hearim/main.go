@@ -122,7 +122,7 @@ func cmdUpdate(args []string) error {
 	if !ok {
 		return fmt.Errorf("release %s has no build for %s/%s (asset %q)", rel.TagName, runtime.GOOS, runtime.GOARCH, assetName)
 	}
-	sums, err := selfupdate.Checksums(ctx, client, rel)
+	sums, err := selfupdate.Checksums(ctx, client, rel, token)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := selfupdate.DownloadVerified(ctx, client, asset, want, exeDir(exe))
+	tmp, err := selfupdate.DownloadVerified(ctx, client, asset, want, exeDir(exe), token)
 	if err != nil {
 		return err
 	}
