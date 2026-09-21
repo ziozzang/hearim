@@ -33,6 +33,15 @@ vision+tools+thinking+cloud 태그 모델: `gemma4`(e2b–31b),
 | kimi-k3 | ✅ (190 토큰) | `` | ❌ |
 | minimax-m3 | ✅ (217 토큰) | `` | ❌ |
 
+추가 실측(같은 날): Ollama Cloud는 **`/v1/responses`(Responses API)를
+노출**하고 `output_text` 콘텐츠 파트에 `logprobs` 필드가 있다 — 뼈대는
+존재 — 그러나 서버가 `top_logprobs` 파라미터를 0으로 만들고(보낸 값과
+무관하게 0으로 에코) 스트리밍 포함 모든 logprobs 배열이 비어 온다.
+네이티브 `/api/chat`(그 API엔 logprob 파라미터 자체가 없음)도 정확히
+답하지만 확률은 없다. 결론은 동일하되 이유가 정확해졌다: cloud는
+서버 쪽 플래그 하나 거리이며, 오늘 클라이언트가 보낼 수 있는 것으로는
+바꿀 수 없다.
+
 해석: **cloud에서 비전 추론은 되지만 logprob 표면이 없다.** 따라서
 hearim은 probe가 logprob을 목격할 때까지 cloud route를 exact 운전에서
 제외한다. thinking VLM들은 `max_tokens: 1`에서 가시 콘텐츠가 비므로

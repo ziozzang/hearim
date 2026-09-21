@@ -62,12 +62,82 @@ type Summary struct {
 	// usable logprobs when the resolved route was chat — evidence for
 	// pinning models[].endpoint: completions on thinking models.
 	CompletionsFallbackViable bool `json:"completions_fallback_viable,omitempty"`
+	// ThinkingDiscovery: the auto-discovered reasoning-disable control
+	// (empty unless RunOptions.DiscoverThinking was set).
+	ThinkingDiscovery string `json:"thinking_discovery,omitempty"`
 }
 
 // thinkOpenMarkers are the known reasoning-block openers across model
 // families; a generation containing one means reasoning was not suppressed.
 var thinkOpenMarkers = []string{
 	"<think", "<|think", "<|channel>thought", "<reasoning", "<|reasoning",
+}
+
+// ThinkingControlCandidate is one catalog entry for auto-discovery: a known
+// model-card control shape to try against the live model.
+type ThinkingControlCandidate struct {
+	Label      string
+	Field      string
+	Value      any
+	UserSuffix string
+}
+
+// thinkingCatalog enumerates the reasoning-disable shapes observed across
+// model families (cards surveyed 2026-09-21). The engine default
+// (think:false) is always tried implicitly as candidate zero.
+var thinkingCatalog = []ThinkingControlCandidate{
+	{Label: "reasoning_effort=none (OpenAI-style effort control)", Field: "reasoning_effort", Value: "none"},
+	{Label: "enable_thinking=false (Qwen token plan / dashscope)", Field: "enable_thinking", Value: false},
+	{Label: "thinking={type:disabled} (z.ai standard endpoint)", Field: "thinking", Value: map[string]any{"type": "disabled"}},
+	{Label: "user_suffix /no_think (legacy GLM command token)", UserSuffix: "/no_think"},
+	{Label: "chat_template_kwargs.enable_thinking=false (vLLM/SGLang)", Field: "chat_template_kwargs", Value: map[string]any{"enable_thinking": false}},
+}
+
+// DiscoverThinkingControl tries every catalog candidate against the live
+// model and reports which (if any) suppresses reasoning markers.
+func DiscoverThinkingControl(ctx context.Context, adpt provider.Adapter, model string,
+	reg *registry.Registry, endpoint config.EndpointKind, cfg config.CompilerConfig) (string, bool) {
+
+	ids, texts, _ := reg.Bind(registryLabels(reg))
+	base := provider.NextTokenScoreRequest{
+		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: model},
+		Endpoint:            endpoint,
+		PromptText:          fixedProbePrompt(cfg) + reg.Delimiter,
+		CandidateTokenIDs:   ids,
+		CandidateTokenTexts: texts,
+		TopK:                reg.TopN,
+		MaxOutputTokens:     64,
+	}
+	try := func(req provider.NextTokenScoreRequest) bool {
+		res, err := adpt.ScoreNextToken(ctx, req)
+		if err != nil {
+			return false
+		}
+		for _, m := range thinkOpenMarkers {
+			if strings.Contains(res.GeneratedText, m) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if endpoint == config.EndpointChatCompletion {
+		r := base
+		r.NoReasoning = true
+		if try(r) {
+			return "engine default (NoReasoning -> think:false)", true
+		}
+	}
+	for _, c := range thinkingCatalog {
+		r := base
+		r.PromptText = base.PromptText + c.UserSuffix
+		r.ReasoningField = c.Field
+		r.ReasoningValue = c.Value
+		if try(r) {
+			return c.Label, true
+		}
+	}
+	return "", false
 }
 
 // probeThinkingControl runs a bounded generation with the model's configured
@@ -160,9 +230,20 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// RunOptions tunes a probe run.
+type RunOptions struct {
+	// DiscoverThinking tries the whole control catalog and reports the
+	// working one as ready-to-paste YAML (report field ThinkingDiscovery).
+	DiscoverThinking bool
+}
+
 // Run executes the capability suite against one provider/model. modelCfg
 // carries the model-card-derived thinking configuration (may be nil).
-func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.CompilerConfig, modelCfg *config.ModelConfig) (*Report, error) {
+func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.CompilerConfig, modelCfg *config.ModelConfig, opts ...RunOptions) (*Report, error) {
+	var ro RunOptions
+	if len(opts) > 0 {
+		ro = opts[0]
+	}
 	rep := &Report{
 		ProviderID: adpt.ID(),
 		Engine:     string(adpt.Engine()),
@@ -264,6 +345,14 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	chatOK, chatDetail := probeChat(ctx, adpt, model, probePrompt, reg, cfg)
 	rep.Summary.ChatLogprobs = chatOK
 	check("chat_logprobs", chatOK, chatDetail)
+
+	if ro.DiscoverThinking {
+		if label, ok := DiscoverThinkingControl(ctx, adpt, model, reg, endpoint, cfg); ok {
+			rep.Summary.ThinkingDiscovery = label
+		} else {
+			rep.Summary.ThinkingDiscovery = "none of the catalog controls suppressed reasoning markers"
+		}
+	}
 
 	// Model-card thinking control verification: model cards differ per
 	// model (gemma4: <|think|> system token, tags still emitted when off;

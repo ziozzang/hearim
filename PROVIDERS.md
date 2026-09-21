@@ -33,6 +33,15 @@ Vision+tools+thinking+cloud tagged models: `gemma4` (e2b–31b), `qwen3.5`
 | kimi-k3 | ✅ (190 tokens) | `` | ❌ |
 | minimax-m3 | ✅ (217 tokens) | `` | ❌ |
 
+Follow-up (same day): Ollama Cloud **does expose `/v1/responses`** (the
+Responses API), and its `output_text` content parts carry a `logprobs`
+field — the scaffolding exists — but the server zeroes the `top_logprobs`
+parameter (echoed back as 0 whatever you send) and every logprobs array
+arrives empty, streaming included. Native `/api/chat` (no logprob
+parameter at all in that API) also answers correctly but carries no
+probabilities. Conclusion unchanged, with a precise reason: cloud is one
+server-side flag away; nothing a client can send changes it today.
+
 Reading: **vision inference works on cloud; the logprob surface does not
 exist.** hearim therefore keeps cloud routes out of exact rotation until a
 probe sees logprobs. Thinking VLMs return empty visible content at

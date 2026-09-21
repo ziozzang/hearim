@@ -29,7 +29,7 @@ import (
 	"hearim/internal/hearim/selfupdate"
 )
 
-var version = "0.6.0"
+var version = "0.6.1"
 
 // updateRepo is the GitHub repository self-update pulls release builds from.
 const updateRepo = "ziozzang/hearim"
@@ -267,6 +267,7 @@ func cmdProbe(args []string) error {
 	configPath, logLevel, logJSON := commonFlags(fs)
 	providerID := fs.String("provider", "", "probe only this provider id")
 	model := fs.String("model", "", "probe only this model (requires -provider)")
+	discover := fs.Bool("discover-thinking", false, "try the known reasoning-disable control catalog and report the working one")
 	out := fs.String("out", "", "write JSON report to file")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -316,11 +317,14 @@ func cmdProbe(args []string) error {
 			return err
 		}
 		logger.Info("probing", "provider", t.provider.ID, "model", t.model)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		rep, err := probe.Run(ctx, adpt, t.model, cfg.Compiler, t.modelCfg)
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		rep, err := probe.Run(ctx, adpt, t.model, cfg.Compiler, t.modelCfg, probe.RunOptions{DiscoverThinking: *discover})
 		cancel()
 		if err != nil {
 			return err
+		}
+		if *discover && rep.Summary.ThinkingDiscovery != "" {
+			fmt.Printf("thinking control: %s\n", rep.Summary.ThinkingDiscovery)
 		}
 		fmt.Println(rep.Marshal())
 		reports = append(reports, rep)
