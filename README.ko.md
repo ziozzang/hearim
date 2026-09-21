@@ -293,6 +293,28 @@ models:
 `thinking` 블록이 없으면 `type: thinking` 모델은 엔진이 reasoning을 완전히
 끌 수 없는 한 exact chat 경로가 없다(TODO.md §3.4).
 
+일부 카드는 thinking을 **프롬프트 수준**에서 제어해서 요청 필드로는 표현할
+수 없다 — 따라서 프롬프트 모양도 모델별로 강제 재지정 가능하다:
+
+```yaml
+models:
+  - name: gemma4:31b
+    prompt:
+      system_prefix: "<|think|>"   # 시스템 시작의 제어 토큰(카드 문서화)
+      # template: |                # 전체 raw 레이아웃 재정의(Go text/template):
+      #   SYS {{.System}}          #   {{.System}} {{.State}} {{.Question}}
+      #   {{.State}}               #   {{.Criteria}} {{.Marker}}
+      #   {{.Question}}{{.Criteria}}{{.Marker}}
+```
+
+`system_prefix`는 시스템 블록(raw 레이아웃)과 chat 시스템 메시지 앞에
+붙는다. 커스텀 `template`은 raw 프롬프트 전체를 대체한다 — 다섯 변수는
+렌더링된 system/state/question/criteria 블록과 답변 마커이며, 커스텀
+템플릿은 state-major prefix 공유를 모양 제어와 맞바꾸고 raw completion
+경로에만 적용된다. 재정의는 템플릿 식별자에 해시로 반영되어 레지스트리와
+prefix key가 재정의별로 분리되고, 라벨 경계도 정확히 그 문맥에서
+검증된다.
+
 `close_tag`는 자유 형식이라 모델 계열별 태그 구조를 그대로 쓸 수 있다.
 2026-09-21에 조사한 Ollama Cloud 카드만 해도 세 가지로 다르다:
 

@@ -44,6 +44,13 @@ providers:
     models:
       - name: gemma4:31b
         type: chat
+        prompt:
+          # Card-documented control token at system start; thinking is OFF
+          # when the token is absent, so only add it to force thinking on.
+          # system_prefix: "<|think|>"
+          # template: |            # full raw-layout override when needed:
+          #   SYS {{.System}}
+          #   {{.State}}{{.Question}}{{.Criteria}}{{.Marker}}
         thinking:
           close_tag: "<channel|>"   # gemma4's own tag structure; the empty
                                     # thought block is skipped, next token = label

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -167,6 +168,29 @@ type ModelConfig struct {
 	// disable it, and how to handle <think>-style output when it cannot be
 	// disabled. See ThinkingConfig.
 	Thinking *ThinkingConfig `yaml:"thinking" json:"thinking,omitempty"`
+	// Prompt overrides the compiled prompt for this model (cards like
+	// gemma4's toggle thinking via a control token at the start of the
+	// system prompt, which no request field can express). See PromptConfig.
+	Prompt *PromptConfig `yaml:"prompt" json:"prompt,omitempty"`
+}
+
+// PromptConfig force-reassigns the prompt shape per model.
+//
+//	system_prefix — raw string prepended to the system block (raw layout)
+//	  and to the system chat message. This is where control tokens such as
+//	  gemma4's "<|think|>" go: the token is part of the prompt, not a
+//	  request field.
+//	template — a full override of the RAW prompt layout as a Go
+//	  text/template. Variables: {{.System}}, {{.State}} (the canonical
+//	  state block), {{.Question}} (the question block), {{.Criteria}} (the
+//	  labeled criteria block), {{.Marker}} (the answer marker). Custom
+//	  templates apply to raw completion routes only; chat routes keep the
+//	  structural rendering (plus system_prefix). The template text is
+//	  hashed into the registry identity, so label boundaries are probed in
+//	  the exact overridden context.
+type PromptConfig struct {
+	SystemPrefix string `yaml:"system_prefix" json:"system_prefix"`
+	Template     string `yaml:"template" json:"template"`
 }
 
 // ThinkingConfig maps what a model card documents about reasoning control
@@ -238,6 +262,13 @@ func (m *ModelConfigs) UnmarshalYAML(node *yaml.Node) error {
 				}
 				if mc.Thinking.DisableValue != nil && mc.Thinking.DisableField == "" {
 					return fmt.Errorf("config: model %q: thinking.disable_value requires disable_field", mc.Name)
+				}
+			}
+			if mc.Prompt != nil {
+				if strings.TrimSpace(mc.Prompt.Template) != "" {
+					if _, err := template.New("prompt").Parse(mc.Prompt.Template); err != nil {
+						return fmt.Errorf("config: model %q: prompt.template: %w", mc.Name, err)
+					}
 				}
 			}
 			out = append(out, mc)

@@ -235,7 +235,14 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 	}
 
 	// Registry: load persisted or build via probes (§6.1 step 11, §6.5).
-	probePlan, err := s.Compiler.Compile(probeRequest(), model)
+	// The probe prompt is compiled under the model's prompt override so
+	// verified boundaries transfer to production prompts, and the override
+	// hash lands in the registry identity.
+	var promptOverride *config.PromptConfig
+	if modelCfg != nil {
+		promptOverride = modelCfg.Prompt
+	}
+	probePlan, err := s.Compiler.CompileWith(probeRequest(), model, promptOverride)
 	if err != nil {
 		return eval.Route{}, err
 	}
@@ -245,7 +252,7 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 		BackendModel:        model,
 		TokenizerRevision:   tokenizerRevisionOf(adpt),
 		Endpoint:            string(route.Endpoint),
-		TemplateVersion:     s.Cfg.Compiler.TemplateVersion,
+		TemplateVersion:     probePlan.TemplateVersion,
 		PromptBase:          promptBase,
 		DelimiterCandidates: s.Cfg.Compiler.DelimiterCandidates,
 		Alphabets:           s.Cfg.Compiler.LabelAlphabets,

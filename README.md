@@ -311,6 +311,29 @@ models:
 Without a `thinking` block, `type: thinking` models simply have no exact
 chat route (TODO.md §3.4) unless the engine can fully disable reasoning.
 
+Some cards control thinking at the **prompt** level, which no request
+field can express — so prompt shape is also per-model overridable:
+
+```yaml
+models:
+  - name: gemma4:31b
+    prompt:
+      system_prefix: "<|think|>"   # control token at system start (card-documented)
+      # template: |                # full raw-layout override (Go text/template):
+      #   SYS {{.System}}          #   {{.System}} {{.State}} {{.Question}}
+      #   {{.State}}               #   {{.Criteria}} {{.Marker}}
+      #   {{.Question}}{{.Criteria}}{{.Marker}}
+```
+
+`system_prefix` is prepended to the system block (raw layout) and to the
+chat system message. A custom `template` replaces the whole raw prompt —
+the five variables are the rendered system/state/question/criteria blocks
+and the answer marker; custom templates trade state-major prefix sharing
+for shape control and apply to raw completion routes only. The override is
+hashed into the template identity, so registries and prefix keys stay
+per-override and label boundaries are probed in the exact overridden
+context.
+
 `close_tag` is free-form, so family-specific tag structures work — the
 Ollama Cloud cards surveyed on 2026-09-21 already differ three ways:
 

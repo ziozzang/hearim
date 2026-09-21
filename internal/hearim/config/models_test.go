@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestModelEntriesParsing(t *testing.T) {
 	cfg, err := Parse([]byte(`
@@ -175,5 +178,52 @@ model_aliases:
   a: p:m
 `)); err == nil {
 		t.Error("disable_value without field should be rejected")
+	}
+}
+
+func TestPromptOverrideConfig(t *testing.T) {
+	cfg, err := Parse([]byte(`
+providers:
+  - id: p
+    engine: ollama
+    base_url: http://x
+    models:
+      - name: gemma4:31b
+        prompt:
+          system_prefix: "<|think|>"
+      - name: custom:7b
+        prompt:
+          template: |
+            SYS {{.System}}
+            {{.State}}{{.Question}}{{.Criteria}}{{.Marker}}
+model_aliases:
+  m: p:gemma4:31b
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := cfg.Providers[0].Models.Find("gemma4:31b")
+	if g.Prompt == nil || g.Prompt.SystemPrefix != "<|think|>" {
+		t.Errorf("system prefix = %+v", g.Prompt)
+	}
+	cu := cfg.Providers[0].Models.Find("custom:7b")
+	if cu.Prompt == nil || !strings.Contains(cu.Prompt.Template, "{{.State}}") {
+		t.Errorf("template = %+v", cu.Prompt)
+	}
+
+	// Broken templates are rejected at load time.
+	if _, err := Parse([]byte(`
+providers:
+  - id: p
+    engine: ollama
+    base_url: http://x
+    models:
+      - name: bad
+        prompt:
+          template: "{{.Broken"
+model_aliases:
+  a: p:bad
+`)); err == nil {
+		t.Error("invalid template syntax not rejected")
 	}
 }

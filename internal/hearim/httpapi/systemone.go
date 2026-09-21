@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"hearim/internal/hearim/config"
 	"hearim/internal/hearim/eval"
 	"hearim/internal/hearim/jev"
 	"hearim/internal/hearim/schedule"
@@ -57,7 +58,7 @@ func (s *Server) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	plan, err := s.Compiler.Compile(parsed, route.BackendModel)
+	plan, err := s.Compiler.CompileWith(parsed, route.BackendModel, modelPrompt(route))
 	if err != nil {
 		writeJevError(w, r, jev.NewError(jev.CodeValidationFailed, "%v", err))
 		return
@@ -142,6 +143,14 @@ func (s *Server) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		s.Logger.Error("encode response", "err", err)
 	}
+}
+
+// modelPrompt extracts the per-model prompt override from the route.
+func modelPrompt(route eval.Route) *config.PromptConfig {
+	if route.ModelCfg == nil {
+		return nil
+	}
+	return route.ModelCfg.Prompt
 }
 
 // recordUsage feeds the cost ledger and budget with reported figures only

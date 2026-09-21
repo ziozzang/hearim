@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"text/template"
 
 	"hearim/internal/hearim/canon"
 	"hearim/internal/hearim/config"
@@ -68,6 +70,9 @@ type EvaluationPlan struct {
 	// URLs). They travel as chat content parts on vision routes; raw
 	// completion routes reject image-bearing states.
 	Images []string
+	// SystemPrefix is the model's control-token prefix for the system
+	// block/chat system message (per-model prompt override).
+	SystemPrefix string
 }
 
 // Compiler compiles validated requests into evaluation plans.
@@ -82,6 +87,13 @@ func New(cfg config.CompilerConfig) *Compiler {
 
 // Compile builds the plan for a parsed request.
 func (c *Compiler) Compile(pr *jev.ParsedRequest, backendModel string) (*EvaluationPlan, error) {
+	return c.CompileWith(pr, backendModel, nil)
+}
+
+// CompileWith builds the plan under a per-model prompt override (TODO.md
+// extension: model cards may demand control tokens or wholly different
+// prompt shapes). A nil override keeps the configured template.
+func (c *Compiler) CompileWith(pr *jev.ParsedRequest, backendModel string, prompt *config.PromptConfig) (*EvaluationPlan, error) {
 	canonicalState, err := canon.String(pr.State)
 	if err != nil {
 		return nil, fmt.Errorf("compile: canonicalize state: %w", err)
@@ -103,20 +115,41 @@ func (c *Compiler) Compile(pr *jev.ParsedRequest, backendModel string) (*Evaluat
 		BackendModel:    backendModel,
 		CanonicalState:  canonicalState,
 		StateHash:       hex.EncodeToString(stateHash[:]),
-		TemplateVersion: c.Config.TemplateVersion,
+		TemplateVersion: c.templateIdentity(prompt),
 		Layout:          layout,
 		Delimiter:       defaultDelimiter(c.Config.DelimiterCandidates),
 		Images:          pr.Images,
 	}
+	if prompt != nil {
+		plan.SystemPrefix = prompt.SystemPrefix
+	}
 
 	for _, q := range pr.Questions {
-		cq, err := c.compileQuestion(q, canonicalState, layout)
+		cq, err := c.compileQuestion(q, canonicalState, layout, prompt)
 		if err != nil {
 			return nil, err
 		}
 		plan.Questions = append(plan.Questions, cq)
 	}
 	return plan, nil
+}
+
+// templateIdentity extends the template version with the override's hash so
+// registries, prefix keys, and persisted probes stay per-override.
+func (c *Compiler) templateIdentity(prompt *config.PromptConfig) string {
+	if prompt == nil || (prompt.SystemPrefix == "" && prompt.Template == "") {
+		return c.Config.TemplateVersion
+	}
+	h := sha256.Sum256([]byte(prompt.SystemPrefix + "\x00" + prompt.Template))
+	return c.Config.TemplateVersion + "+override-" + hex.EncodeToString(h[:])[:12]
+}
+
+// promptTemplate returns the effective raw template text ("" = built-in).
+func promptTemplate(prompt *config.PromptConfig) string {
+	if prompt == nil {
+		return ""
+	}
+	return prompt.Template
 }
 
 func defaultDelimiter(candidates []string) string {
@@ -126,7 +159,7 @@ func defaultDelimiter(candidates []string) string {
 	return "\n"
 }
 
-func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string, layout config.Layout) (*CompiledQuestion, error) {
+func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string, layout config.Layout, prompt *config.PromptConfig) (*CompiledQuestion, error) {
 	cands, reduction, err := c.mapCandidates(q)
 	if err != nil {
 		return nil, err
@@ -146,6 +179,10 @@ func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string,
 	questionBlock := renderQuestionBlock(q.Type, instructions)
 	criteriaBlock := renderCriteriaBlock(criteria)
 	marker := answerMarker + planDelimiterHint
+	prefix := ""
+	if prompt != nil {
+		prefix = prompt.SystemPrefix
+	}
 
 	cq := &CompiledQuestion{
 		ID:         q.ID,
@@ -154,19 +191,58 @@ func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string,
 		Reduction:  reduction,
 	}
 
+	if tmpl := promptTemplate(prompt); tmpl != "" {
+		// Full raw-layout override. The rendered prompt is the whole suffix;
+		// custom templates trade state-major prefix sharing for shape
+		// control (documented).
+		rendered, err := renderCustomTemplate(tmpl, TemplateData{
+			System:   prefix + systemText(),
+			State:    stateBlock,
+			Question: questionBlock,
+			Criteria: criteriaBlock,
+			Marker:   marker,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("compile: question %s: template: %w", q.ID, err)
+		}
+		cq.PromptSuffix = rendered
+		return cq, nil
+	}
+
 	switch layout {
 	case config.LayoutStateMajor:
 		// [fixed system][state][question][criteria][marker]
-		cq.PromptPrefix = systemBlock(c.Config.TemplateVersion) + stateBlock
+		cq.PromptPrefix = systemBlock(prefix) + stateBlock
 		cq.PromptSuffix = questionBlock + criteriaBlock + marker
 	case config.LayoutRubricMajor:
 		// [fixed system][question][criteria][state][marker]
-		cq.PromptPrefix = systemBlock(c.Config.TemplateVersion) + questionBlock + criteriaBlock
+		cq.PromptPrefix = systemBlock(prefix) + questionBlock + criteriaBlock
 		cq.PromptSuffix = stateBlock + marker
 	default:
 		return nil, fmt.Errorf("compile: unknown layout %q", layout)
 	}
 	return cq, nil
+}
+
+// TemplateData is the variable set exposed to custom prompt templates.
+type TemplateData struct {
+	System   string
+	State    string
+	Question string
+	Criteria string
+	Marker   string
+}
+
+func renderCustomTemplate(tmpl string, data TemplateData) (string, error) {
+	t, err := template.New("prompt").Parse(tmpl)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := t.Execute(&b, data); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 // mapCandidates assigns single-token labels per TODO.md §6.4:

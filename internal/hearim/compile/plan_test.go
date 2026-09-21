@@ -279,3 +279,59 @@ func sliceToMap(names []string) map[string]any {
 	}
 	return m
 }
+
+func TestSystemPrefixOverride(t *testing.T) {
+	// gemma4-style control token: prepended to the system block and the
+	// chat system message, and folded into the template identity.
+	pr, err := jev.Validate([]byte(choiceReq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(config.CompilerConfig{TemplateVersion: "systemone-v1"})
+	base, err := c.Compile(pr, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	over, err := c.CompileWith(pr, "m", &config.PromptConfig{SystemPrefix: "<|think|>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(over.Prompt(over.Questions[0]), "<|think|><system-one-evaluator") {
+		t.Errorf("prefix missing:\n%s", over.Prompt(over.Questions[0])[:80])
+	}
+	if over.TemplateVersion == base.TemplateVersion {
+		t.Error("template identity must change with the override")
+	}
+	msgs := over.ChatMessages(over.Questions[0])
+	sys, ok := msgs[0].Content.(string)
+	if !ok || !strings.HasPrefix(sys, "<|think|>") {
+		t.Errorf("chat system prefix missing: %q", sys)
+	}
+}
+
+func TestCustomTemplateOverride(t *testing.T) {
+	tmpl := "SYSTEM: {{.System}}\nCONTEXT:\n{{.State}}\nTASK:\n{{.Question}}{{.Criteria}}ANSWER:"
+	pr, err := jev.Validate([]byte(choiceReq))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(config.CompilerConfig{TemplateVersion: "systemone-v1"})
+	plan, err := c.CompileWith(pr, "m", &config.PromptConfig{Template: tmpl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := plan.Prompt(plan.Questions[0])
+	for _, want := range []string{"SYSTEM: <system-one-evaluator", "CONTEXT:\n<state", "TASK:\n<question", "1 = billing", "ANSWER:"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("custom prompt missing %q:\n%s", want, full)
+		}
+	}
+	// Custom templates replace the built-in layout: whole prompt is the
+	// suffix, no marker constant is forced (the template owns the shape).
+	if strings.Contains(full, "<answer-label>") {
+		t.Error("built-in marker must not leak into custom templates")
+	}
+	if plan.TemplateVersion == "systemone-v1" {
+		t.Error("identity must reflect the override")
+	}
+}
