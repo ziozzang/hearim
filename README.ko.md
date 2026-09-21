@@ -18,6 +18,13 @@ next-token scoring 호출이며, 라벨 fast path가 불가능하면 라벨 또�
 reasoning 토큰이 능력 부족이 아니라 chat 서피스 아티팩트인 이유, 실측 예시와
 함께한 조용한 실패 모드, 그리고 프로바이더별 logprob 표면 존재 여부 조사.
 
+**[Jev형 모델을 학습하는 법 — paper/how-to-train-jev-like-model.pdf](paper/how-to-train-jev-like-model.pdf)**
+(소스: [how-to-train-jev-like-model.tex](paper/how-to-train-jev-like-model.tex))
+— 전용 모델이 실제로 필요할 때 전체 행동을 단 하나의 라벨 토큰으로 제한한
+분류기로 학습하는 방법. 1-step RL, 정답 라벨이 있을 때 더 단순한 지도학습,
+`<answer-a>` 같은 선택적 추가 토큰, calibration, 그리고 파인튜닝이 필수
+조건이 아니라 주로 출력 안정성을 위한 도구인 이유를 설명한다.
+
 ### 이름의 뜻
 
 **헤아림**은 동사 **헤아리다**의 명사형으로, 두 가지 얽힌 뜻을 갖는다:

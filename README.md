@@ -20,6 +20,14 @@ tokenization boundary invariant, why reasoning tokens are a chat-surface
 artifact rather than a capability gap, the silent failure modes with measured
 examples, and a survey of where the logprob surface exists across providers.
 
+**[How to train a Jev-like model — paper/how-to-train-jev-like-model.pdf](paper/how-to-train-jev-like-model.pdf)**
+(source: [how-to-train-jev-like-model.tex](paper/how-to-train-jev-like-model.tex))
+— when a dedicated model is actually needed, treat it as a classifier whose
+entire action is one label token. The paper covers one-step RL, the simpler
+supervised alternative when gold labels exist, optional tokens such as
+`<answer-a>`, calibration, and why fine-tuning is chiefly a tool for output
+stability rather than a requirement.
+
 ### The name
 
 **헤아림** is the nominal form of the Korean verb **헤아리다**, which carries
