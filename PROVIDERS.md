@@ -39,6 +39,51 @@ probe sees logprobs. Thinking VLMs return empty visible content at
 `max_tokens: 1` — generation-based fallbacks would need `thinking.wait_close`
 with a real token budget, and still have no logprobs to read.
 
+## GLM via z.ai (measured 2026-09-21)
+
+Endpoint: `https://api.z.ai/api/coding/paas/v4` (coding subscription
+surface, OpenAI-compatible). Models: glm-4.5 … glm-5.3-flash(x).
+
+- Answers are **correct** (even/odd → `1`), but all models are always-on
+  reasoners: output lands in `reasoning_content` while `content` stays
+  empty until reasoning finishes — `max_tokens: 1` is consumed by
+  reasoning (the §3.4 hidden-reasoning hazard, with
+  `usage.completion_tokens_details.reasoning_tokens` to observe it).
+- `thinking: {"type": "disabled"}` is ignored on this surface.
+- **`logprobs` is silently ignored** — requested and dropped, on every
+  model, chat and full generations alike.
+
+Verdict: same class as Ollama Cloud — inference fine, no logprob surface,
+so no exact evaluation today. If z.ai exposes logprobs (or the standard
+non-coding endpoint differs), `engine: generic-openai` + `endpoint:
+chat_completions` attaches immediately.
+
+## OpenRouter (measured 2026-09-21) — works
+
+`https://openrouter.ai/api/v1`, OpenAI-compatible. Per-model passthrough:
+
+| Model | logprobs | notes |
+|---|---|---|
+| `openai/gpt-4o-mini` | ✅ top-10, sharp (`1` −0.0 / `0` −11.25) | full pipeline verified through `/v1/systemone` |
+| `meta-llama/llama-3.3-70b-instruct` | ❌ (provider-side) | check per model |
+
+Verified end-to-end through hearim as a generic provider with custom
+headers (`HTTP-Referer`, `X-Title` — our `headers:` config), forced
+`chat_completions` endpoint, probe-only registry (OpenRouter has no
+tokenizer endpoint): noul even/odd → 0.9999999998; choice routing →
+billing/delivery 0.5/0.5 (honest ambiguity). Recommended config:
+
+```yaml
+providers:
+  - id: openrouter
+    engine: generic-openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    endpoint: chat_completions
+    headers: {HTTP-Referer: "https://github.com/ziozzang/hearim", X-Title: hearim}
+    models: [{name: openai/gpt-4o-mini}]
+```
+
 ## Model-card survey: thinking control differs per model
 
 - **gemma4** — thinking toggles via a `<|think|>` token at the start of the

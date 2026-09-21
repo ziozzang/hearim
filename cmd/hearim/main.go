@@ -29,7 +29,7 @@ import (
 	"hearim/internal/hearim/selfupdate"
 )
 
-var version = "0.5.2"
+var version = "0.5.3"
 
 // updateRepo is the GitHub repository self-update pulls release builds from.
 const updateRepo = "ziozzang/hearim"

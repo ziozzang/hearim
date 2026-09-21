@@ -39,6 +39,50 @@ hearim은 probe가 logprob을 목격할 때까지 cloud route를 exact 운전에
 생성 기반 fallback도 `thinking.wait_close`와 실제 토큰 예산이 필요하고,
 그래도 읽을 logprob이 없다.
 
+## z.ai GLM (2026-09-21 실측)
+
+엔드포인트: `https://api.z.ai/api/coding/paas/v4`(코딩 구독 표면,
+OpenAI 호환). 모델: glm-4.5 … glm-5.3-flash(x).
+
+- 답은 **정확하다**(짝홀 → `1`). 단 전 모델이 상시 reasoner라 출력이
+  `reasoning_content`에 들어가고 reasoning이 끝나야 `content`가 차오른다
+  — `max_tokens: 1`은 reasoning에 소모된다(§3.4 hidden-reasoning 위험,
+  `usage.completion_tokens_details.reasoning_tokens`으로 관측 가능).
+- 이 표면에서는 `thinking: {"type": "disabled"}`가 무시된다.
+- **`logprobs`가 조용히 무시된다** — 요청은 받지만 어느 모델, 어떤
+  생성에서도 반환되지 않는다.
+
+결론: Ollama Cloud와 같은 부류 — 추론은 되지만 logprob 표면이 없어
+오늘 기준 exact 평가 불가. z.ai가 logprob을 노출하면(또는 일반
+비코딩 엔드포인트가 다르면) `engine: generic-openai` + `endpoint:
+chat_completions`로 즉시 부착 가능하다.
+
+## OpenRouter (2026-09-21 실측) — 됨
+
+`https://openrouter.ai/api/v1`, OpenAI 호환. 모델별 통과 여부:
+
+| 모델 | logprobs | 비고 |
+|---|---|---|
+| `openai/gpt-4o-mini` | ✅ top-10, 선명(`1` −0.0 / `0` −11.25) | `/v1/systemone` 전 과정 검증 |
+| `meta-llama/llama-3.3-70b-instruct` | ❌ (프로바이더 측) | 모델별 확인 필요 |
+
+hearim을 통한 종단간 검증 완료: 커스텀 헤더(`HTTP-Referer`,
+`X-Title` — `headers:` 설정), `chat_completions` 강제 지정,
+probe-only 레지스트리(OpenRouter에 tokenizer 엔드포인트 없음).
+짝홀 noul → 0.9999999998; 라우팅 choice → billing/delivery 0.5/0.5
+(정직한 모호성). 권장 설정:
+
+```yaml
+providers:
+  - id: openrouter
+    engine: generic-openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    endpoint: chat_completions
+    headers: {HTTP-Referer: "https://github.com/ziozzang/hearim", X-Title: hearim}
+    models: [{name: openai/gpt-4o-mini}]
+```
+
 ## 모델 카드 조사: thinking 제어는 모델마다 다르다
 
 - **gemma4** — **시스템 프롬프트 시작**의 `<|think|>` 토큰으로 토글.
