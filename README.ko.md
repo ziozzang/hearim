@@ -90,10 +90,32 @@ strict 모드(기본)에서 복원 불가능한 후보가 있으면 요청 전�
 `tokenize(prefix)`가 정확한 prefix이며 토큰이 정확히 하나 더 붙는지 확인하며,
 알파벳 전체가 조건을 만족할 때까지 delimiter 후보를 바꿔 시도하고, 실제
 1-token completion probe로 확인한다. 레지스트리는
-모델/digest/tokenizer/template/endpoint/delimiter로 키를 지어
+모델/digest/tokenizer/template/endpoint/close-tag/delimiter로 키를 지어
 `data/registries/`에 영속화하며, 그 중 하나라도 바뀌면 폐기한다. 경계
 재분절은 고정 backtrack이 아니라 exact-LCP healing(후보별 LCP의 최솟값)로
 처리한다.
+
+#### API에 tokenizer가 없는 경우
+
+모든 게이트웨이가 /tokenize를 노출하지는 않는다. hearim은 정의된 단계로
+성능을 낮춘다(§6.1 우선순위 3):
+
+1. 레지스트리는 **inference probe**로 전환한다: 답변 위치에서 실제
+   1-token scoring을 호출하고, 라벨이 top-logprob 항목으로 정확히 나타나면
+   구성상 단일 토큰으로 출력 가능하다는 뜻이므로 `token_id: -1`,
+   `boundary_policy: probe-only`로 등록한다. delimiter 후보와 알파벳을
+   순서대로 시도해 라벨이 충분히 확보될 때까지 찾는다.
+2. scoring은 token-ID 요청 대신 **텍스트/바이트 매칭 top-k**를 쓴다 —
+   ID 기반 경로(`logprob_token_ids`, `token_ids_logprob`,
+   teacher-forcing)는 ID가 미해결이면 자동으로 건너뛰며, 절대
+   placeholder 값으로 전송하지 않는다.
+3. readiness: completion probe가 여전히 라벨 logprob을 식별해야 하며,
+   보고서에 `tokenizer_unverified` 경고가 남아 약한 검증 기반임을
+   운영자에게 보여준다.
+
+주의할 결과: 후보 회수가 직접 ID 요청 대신 백엔드의 top-logprob 상한
+(Ollama는 20)에 묶이고, calibration은 probe-only route를 별도 프로파일로
+취급해야 한다.
 
 ### Fan-out과 캐싱
 

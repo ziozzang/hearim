@@ -107,7 +107,14 @@ func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRe
 	}
 	method := "top-k"
 	space := SpaceRaw
-	if len(req.CandidateTokenIDs) > 0 {
+	idsUsable := len(req.CandidateTokenIDs) > 0
+	for _, id := range req.CandidateTokenIDs {
+		if id < 0 {
+			idsUsable = false
+			break
+		}
+	}
+	if idsUsable {
 		body["token_ids_logprob"] = req.CandidateTokenIDs
 		method = "selected-token-ids"
 		if req.ConstrainToCandidates {

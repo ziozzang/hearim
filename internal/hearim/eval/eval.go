@@ -195,7 +195,14 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		return route.Adapter.ScoreNextToken(ctx, req)
 	}
 
-	if bound && caps.SupportsSelectedTokenIDs() {
+	idsResolved := bound
+	for _, id := range ids {
+		if id < 0 {
+			idsResolved = false
+			break
+		}
+	}
+	if idsResolved && caps.SupportsSelectedTokenIDs() {
 		out, err := tryScore(false)
 		attempts = append(attempts, "selected-token-ids")
 		if err == nil && out.AllCandidatesPresent {
@@ -231,7 +238,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		}
 	}
 
-	if logprobs == nil && caps.PromptTokenLogprobs && bound && !scoreReq.WaitClose {
+	if logprobs == nil && caps.PromptTokenLogprobs && idsResolved && !scoreReq.WaitClose {
 		// §7.3 step 4 / §3.11 strategy 3: teacher-forced label scoring for
 		// stable single-token labels.
 		out, err := e.teacherForcedLabels(ctx, plan, qi, route, ids, texts)

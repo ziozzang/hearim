@@ -95,9 +95,33 @@ single tokens in the exact answer-marker context: it tokenizes
 prefix with exactly one extra token, tries delimiter candidates until the
 whole alphabet qualifies, and confirms with a real 1-token completion probe.
 Registries are persisted under `data/registries/` keyed by
-model/digest/tokenizer/template/endpoint/delimiter, and invalidated when any
-of those change. Boundary re-segmentation is handled with exact-LCP healing
-(min over candidates of the longest common prefix), not fixed backtracking.
+model/digest/tokenizer/template/endpoint/close-tag/delimiter, and
+invalidated when any of those change. Boundary re-segmentation is handled
+with exact-LCP healing (min over candidates of the longest common prefix),
+not fixed backtracking.
+
+#### When the API has no tokenizer endpoint
+
+Not every gateway exposes `/tokenize`. hearim degrades in defined steps
+(§6.1 priority 3):
+
+1. The registry falls back to an **inference probe**: a real 1-token
+   scoring call at the answer position; a label that appears exactly as a
+   top-logprob entry is by construction emitable as a single token, so it
+   is registered with `token_id: -1` and `boundary_policy: probe-only`.
+   Delimiter candidates and alphabets are tried in order until one yields
+   enough labels.
+2. Scoring uses **text/bytes matching over top-k** instead of token-ID
+   requests — ID-based paths (`logprob_token_ids`,
+   `token_ids_logprob`, teacher-forcing) are skipped automatically when
+   IDs are unresolved, never sent with placeholder values.
+3. Readiness: the completion probe must still identify label logprobs;
+   the report carries a `tokenizer_unverified` warning so operators see
+   the weaker verification basis.
+
+Consequences to be aware of: candidate recovery is bounded by the backend's
+top-logprob cap (20 on Ollama) instead of direct ID requests, and
+calibration should treat probe-only routes as their own profiles.
 
 ### Fan-out and caching
 

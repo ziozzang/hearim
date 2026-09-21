@@ -276,7 +276,17 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 	}
 	method := "top-k"
 	space := SpaceRaw
-	if selectedField != "" && len(req.CandidateTokenIDs) > 0 {
+	// Direct ID requests are only valid with resolved, non-negative token
+	// IDs — probe-only registries (no tokenizer endpoint) carry -1 and must
+	// fall back to text-matched top-k.
+	idsUsable := selectedField != "" && len(req.CandidateTokenIDs) > 0
+	for _, id := range req.CandidateTokenIDs {
+		if id < 0 {
+			idsUsable = false
+			break
+		}
+	}
+	if idsUsable {
 		body.Extra[selectedField] = req.CandidateTokenIDs
 		body.Logprobs = intptr(1) // per vLLM docs logprobs must be set
 		if req.ConstrainToCandidates {

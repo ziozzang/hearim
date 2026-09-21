@@ -169,40 +169,50 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 	if reg.PreferredAlphabet == "" {
 		// Priority 3: limited inference probe — ask the backend to score the
 		// labels at the answer position; entries returning the label text
-		// exactly are single tokens in this context.
-		prefix := opts.PromptBase + opts.CloseTag + opts.DelimiterCandidates[0]
-		var texts []string
-		for _, alphabet := range opts.Alphabets {
-			for _, label := range alphabet {
-				if label != "" {
-					texts = append(texts, label)
+		// exactly are single tokens in this context. Delimiter candidates
+		// and alphabets are tried in order, because without a tokenizer
+		// there is no way to predict which context keeps labels whole.
+		var lastErr error
+	DelimLoop:
+		for _, delim := range opts.DelimiterCandidates {
+			prefix := opts.PromptBase + opts.CloseTag + delim
+			for ai, alphabet := range opts.Alphabets {
+				texts := make([]string, 0, len(alphabet))
+				for _, label := range alphabet {
+					if label != "" {
+						texts = append(texts, label)
+					}
+				}
+				if len(texts) < 2 {
+					continue
+				}
+				res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
+					Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
+					Endpoint:            endpointKind(opts.Endpoint),
+					PromptText:          prefix,
+					CandidateTokenTexts: texts,
+					TopK:                caps.MaxTopLogprobs,
+				})
+				if err != nil {
+					lastErr = err
+					continue
+				}
+				entries := make([]LabelEntry, 0, len(texts))
+				for i, text := range texts {
+					if lp, ok := res.CandidateLogprobs[i]; ok && lp < 0 {
+						entries = append(entries, LabelEntry{Label: text, TokenID: -1, TokenText: text})
+					}
+				}
+				if len(entries) >= 2 {
+					reg.Alphabets[alphabetName(ai)] = entries
+					reg.PreferredAlphabet = alphabetName(ai)
+					reg.Delimiter = delim
+					break DelimLoop
 				}
 			}
-			break // probe the primary alphabet only
 		}
-		if len(texts) == 0 {
-			return nil, fmt.Errorf("registry: empty primary alphabet")
-		}
-		res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
-			Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
-			Endpoint:            endpointKind(opts.Endpoint),
-			PromptText:          prefix,
-			CandidateTokenTexts: texts,
-			TopK:                caps.MaxTopLogprobs,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("registry: inference probe failed: %w", err)
-		}
-		entries := make([]LabelEntry, 0, len(texts))
-		for i, text := range texts {
-			if lp, ok := res.CandidateLogprobs[i]; ok && lp < 0 {
-				entries = append(entries, LabelEntry{Label: text, TokenID: -1, TokenText: text})
-			}
-		}
-		if len(entries) >= 2 {
-			reg.Alphabets[alphabetName(0)] = entries
-			reg.PreferredAlphabet = alphabetName(0)
-			reg.Delimiter = opts.DelimiterCandidates[0]
+		if reg.PreferredAlphabet == "" && lastErr != nil {
+			return nil, fmt.Errorf("registry: inference probe failed: %w", lastErr)
 		}
 	}
 

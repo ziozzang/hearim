@@ -66,6 +66,13 @@ func (f *evalFake) ScoreNextToken(ctx context.Context, req provider.NextTokenSco
 	} else if f.partialAt > 0 && !f.recoverAll {
 		missingFrom = f.partialAt
 	}
+	method := "selected-token-ids"
+	for _, id := range req.CandidateTokenIDs {
+		if id < 0 {
+			method = "top-k" // unresolved IDs force the text-matched path
+			break
+		}
+	}
 	for i := range req.CandidateTokenTexts {
 		if i >= missingFrom {
 			break
@@ -81,7 +88,7 @@ func (f *evalFake) ScoreNextToken(ctx context.Context, req provider.NextTokenSco
 		AllCandidatesPresent: len(out) == len(req.CandidateTokenTexts),
 		PromptTokens:         100,
 		CachedPromptTokens:   40,
-		ScoringMethod:        "selected-token-ids",
+		ScoringMethod:        method,
 		ProbabilitySpace:     provider.SpaceRaw,
 	}, nil
 }
@@ -240,9 +247,21 @@ func TestScoreAndNoulReduction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Reverse candidate order so index math stays honest: score levels map
-	// 0..3 but we want the doc example distribution on levels.
-	sr, err := ev.EvaluateQuestion(context.Background(), plan, 0, route)
+	// Question order follows the request map (random in Go); find each
+	// question by id instead of assuming an index.
+	scoreIdx, noulIdx := -1, -1
+	for i, q := range plan.Questions {
+		switch q.ID {
+		case "quality":
+			scoreIdx = i
+		case "refund":
+			noulIdx = i
+		}
+	}
+	if scoreIdx < 0 || noulIdx < 0 {
+		t.Fatalf("questions missing: %+v", plan.Questions)
+	}
+	sr, err := ev.EvaluateQuestion(context.Background(), plan, scoreIdx, route)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +276,7 @@ func TestScoreAndNoulReduction(t *testing.T) {
 		t.Errorf("p(level2) = %v", sa.Probabilities["2"])
 	}
 
-	nr, err := ev.EvaluateQuestion(context.Background(), plan, 1, route)
+	nr, err := ev.EvaluateQuestion(context.Background(), plan, noulIdx, route)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,5 +473,33 @@ func TestThinkingWaitCloseSkipsTeacherForced(t *testing.T) {
 	}
 	if fake.tfCalls != 0 {
 		t.Errorf("teacher-forced must be skipped for wait-close models, calls = %d", fake.tfCalls)
+	}
+}
+
+func TestProbeOnlyRegistrySkipsSelectedTokenIDs(t *testing.T) {
+	cfg := testConfig(t)
+	fake := &evalFake{logprobs: []float64{-0.6, -0.9}}
+	route := buildRoute(t, fake, cfg)
+	// Simulate a probe-only registry: IDs unresolved (-1).
+	entries := route.Registry.Alphabets[route.Registry.PreferredAlphabet]
+	for i := range entries {
+		entries[i].TokenID = -1
+	}
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": "s",
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	res, err := ev.EvaluateQuestion(context.Background(), plan, 0, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ScoringMethod != "top-k" {
+		t.Errorf("method = %s, want top-k via text matching", res.ScoringMethod)
+	}
+	for _, id := range fake.lastReq.CandidateTokenIDs {
+		if id >= 0 {
+			t.Errorf("negative-ID candidates must stay unresolved, got %d", id)
+		}
 	}
 }

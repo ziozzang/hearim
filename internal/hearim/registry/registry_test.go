@@ -276,3 +276,50 @@ func TestCloseTagParticipatesInProbingAndKey(t *testing.T) {
 		t.Error("options key must differ with close tag")
 	}
 }
+
+// delimiterSensitiveFake has no tokenizer; its scoring returns labels only
+// when the prompt ends with the space delimiter (simulating a model whose
+// newline-prefixed digits fall outside top-N).
+type delimiterSensitiveFake struct{ fakeAdapter }
+
+func (f *delimiterSensitiveFake) Tokenize(ctx context.Context, model, text string) ([]int, error) {
+	return nil, fmt.Errorf("no tokenizer endpoint")
+}
+
+func (f *delimiterSensitiveFake) ScoreNextToken(ctx context.Context, req provider.NextTokenScoreRequest) (*provider.NextTokenScoreResult, error) {
+	f.scoreCalls++
+	out := map[int]float64{}
+	if strings.HasSuffix(req.PromptText, " ") {
+		for i := range req.CandidateTokenTexts {
+			out[i] = -float64(i + 1)
+		}
+	}
+	return &provider.NextTokenScoreResult{
+		CandidateLogprobs:    out,
+		AllCandidatesPresent: len(out) == len(req.CandidateTokenTexts),
+		ScoringMethod:        "top-k",
+		ProbabilitySpace:     provider.SpaceRaw,
+	}, nil
+}
+
+func TestInferenceProbeTriesAllDelimiters(t *testing.T) {
+	f := &delimiterSensitiveFake{}
+	opts := testOptions()
+	opts.DelimiterCandidates = []string{"\n", " "} // "\n" finds nothing, " " works
+	reg, err := Build(context.Background(), f, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.BoundaryPolicy != "probe-only" {
+		t.Errorf("policy = %s", reg.BoundaryPolicy)
+	}
+	if reg.Delimiter != " " {
+		t.Errorf("delimiter = %q, want the space fallback", reg.Delimiter)
+	}
+	if len(reg.Labels()) < 2 {
+		t.Errorf("labels = %d", len(reg.Labels()))
+	}
+	if f.scoreCalls < 2 {
+		t.Errorf("expected probes for both delimiters, calls = %d", f.scoreCalls)
+	}
+}
