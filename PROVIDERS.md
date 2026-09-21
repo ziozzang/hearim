@@ -74,6 +74,26 @@ logprobs, `engine: generic-openai` + `endpoint: chat_completions` +
 attaches with zero code changes. The object-valued control is covered by
 a regression test.
 
+### Full GLM matrix (measured 2026-09-21)
+
+| Model | std chat think-off | logprobs (any surface) |
+|---|---|---|
+| glm-5.3 / 5.3-flash / 5.3-flashx | ❌ server rejects ("always engages in thinking") | ❌ |
+| glm-5.2 / 5.1 / 5 / 5-turbo / 4.7 / 4.6 / 4.5-air | ✅ immediate visible content | ❌ |
+
+GLM-5.3-Flash deep-dive (the model asked about specifically): correct
+answer `1` after reasoning on long generations — but no logprobs on the
+standard endpoint (long-gen or streaming chunks), none on the coding
+endpoint, no `/completions` surface on standard (404), and z.ai's own API
+reference documents **no logprobs parameters at all** (request or
+response schema). Thinking cannot be disabled server-side, so even
+generation-based recovery would need wait-close budgets — and there are
+still no logprobs to read. Sampling-based approximation (N generations,
+label frequency) is the only statistical route and is out of exact scope.
+
+Caution from the matrix: thinking-disabled mode can hurt quality —
+glm-5-turbo answered `odd` for the number 4 with thinking off.
+
 ## OpenRouter (measured 2026-09-21) — works
 
 `https://openrouter.ai/api/v1`, OpenAI-compatible. Per-model passthrough:

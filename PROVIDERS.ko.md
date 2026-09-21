@@ -70,6 +70,24 @@ OpenAI 호환). 모델: glm-4.5 … glm-5.3-flash(x).
 `thinking: {disable_field: thinking, disable_value: {type: disabled}}`로
 코드 변경 없이 부착된다. 객체 값 제어는 회귀 테스트로 보장한다.
 
+### GLM 전체 매트릭스 (2026-09-21 실측)
+
+| 모델 | 표준 chat think-off | logprobs (모든 표면) |
+|---|---|---|
+| glm-5.3 / 5.3-flash / 5.3-flashx | ❌ 서버 거부("always engages in thinking") | ❌ |
+| glm-5.2 / 5.1 / 5 / 5-turbo / 4.7 / 4.6 / 4.5-air | ✅ 즉시 가시 콘텐츠 | ❌ |
+
+GLM-5.3-Flash 심층(특히 질문한 모델): 긴 생성에서 reasoning 후 정답 `1`
+도출 — 그러나 표준 엔드포인트(긴 생성·스트리밍 청크 모두)에서 logprobs
+없음, 코딩 엔드포인트도 없음, 표준에는 `/completions` 자체가 없음(404),
+z.ai 공식 API 레퍼런스에 **logprobs 파라미터가 요청·응답 스키마 모두에
+존재하지 않음**. thinking은 서버에서 비활성화 불가라 생성 기반 회수도
+wait-close 예산이 필요한데, 읽을 logprobs가 없다. 통계적 근사(N회 생성 후
+라벨 빈도)만이 유일한 경로이나 exact 범위 밖이다.
+
+매트릭스에서의 주의: thinking 비활성화가 품질을 해칠 수 있음 —
+glm-5-turbo는 thinking off 상태에서 4를 두고 `odd`로 오답.
+
 ## OpenRouter (2026-09-21 실측) — 됨
 
 `https://openrouter.ai/api/v1`, OpenAI 호환. 모델별 통과 여부:
