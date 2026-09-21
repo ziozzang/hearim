@@ -12,3 +12,4 @@ hearim.yaml
 # test artifacts
 *.out
 coverage.txt
+/dist/
