@@ -150,3 +150,28 @@ func TestScanAfterCloseTag(t *testing.T) {
 		t.Errorf("empty tag = first position, got %d %v", pos, err)
 	}
 }
+
+func TestReasoningOverrideWithObjectValue(t *testing.T) {
+	// z.ai's standard endpoint documents thinking: {"type": "disabled"} —
+	// an OBJECT-valued control. It must marshal cleanly into the upstream
+	// body (verified live: the standard endpoint honors it; the coding
+	// endpoint ignores it).
+	var bodies []map[string]any
+	srv := httptest.NewServer(waitCloseFake(t, nil, &bodies))
+	defer srv.Close()
+
+	a := NewOllama(config.ProviderConfig{ID: "x", Engine: config.EngineOllama, BaseURL: srv.URL})
+	_, err := a.ScoreNextToken(context.Background(), NextTokenScoreRequest{
+		Model:          ModelIdentity{Model: "glm-4.5-air"},
+		PromptText:     "P",
+		ReasoningField: "thinking",
+		ReasoningValue: map[string]any{"type": "disabled"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, ok := bodies[0]["thinking"].(map[string]any)
+	if !ok || th["type"] != "disabled" {
+		t.Errorf("thinking object control not sent: %v", bodies[0])
+	}
+}

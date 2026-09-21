@@ -53,10 +53,26 @@ surface, OpenAI-compatible). Models: glm-4.5 … glm-5.3-flash(x).
 - **`logprobs` is silently ignored** — requested and dropped, on every
   model, chat and full generations alike.
 
+Follow-up measurements (same day, both endpoints):
+
+- The **standard endpoint** (`https://api.z.ai/api/paas/v4`) accepts the
+  coding key and — unlike the coding endpoint — **honors
+  `thinking: {"type": "disabled"}`**: glm-4.5-air answers immediately with
+  visible content. glm-5.3-flash rejects it outright ("always engages in
+  thinking and cannot be disabled"). Prefer the standard endpoint for
+  hearim routes.
+- `logprobs` remains absent on both endpoints and on every model — no
+  client-side parameter shape changes that (also confirmed against
+  Ollama's own compatibility matrix: logprobs and `echo` are marked
+  unsupported on both chat and completions; only local 0.24.0's chat
+  surface implements it ahead of the docs).
+
 Verdict: same class as Ollama Cloud — inference fine, no logprob surface,
-so no exact evaluation today. If z.ai exposes logprobs (or the standard
-non-coding endpoint differs), `engine: generic-openai` + `endpoint:
-chat_completions` attaches immediately.
+so no exact evaluation today. The moment z.ai or Ollama Cloud exposes
+logprobs, `engine: generic-openai` + `endpoint: chat_completions` +
+`thinking: {disable_field: thinking, disable_value: {type: disabled}}`
+attaches with zero code changes. The object-valued control is covered by
+a regression test.
 
 ## OpenRouter (measured 2026-09-21) — works
 

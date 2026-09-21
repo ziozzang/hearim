@@ -52,10 +52,23 @@ OpenAI 호환). 모델: glm-4.5 … glm-5.3-flash(x).
 - **`logprobs`가 조용히 무시된다** — 요청은 받지만 어느 모델, 어떤
   생성에서도 반환되지 않는다.
 
+추가 실측(같은 날, 양쪽 엔드포인트):
+
+- **표준 엔드포인트**(`https://api.z.ai/api/paas/v4`)는 코딩 키를 받고,
+  코딩 엔드포인트와 달리 **`thinking: {"type": "disabled"}`가 작동한다**:
+  glm-4.5-air가 즉시 가시 콘텐츠로 답한다. glm-5.3-flash는 아예 거부
+  ("always engages in thinking and cannot be disabled"). hearim route에는
+  표준 엔드포인트를 권장.
+- `logprobs`는 양쪽 엔드포인트·전 모델에서 여전히 부재 — 클라이언트 쪽
+  파라미터 형태로 바뀌지 않는다(Ollama 자체 호환 매트릭스로도 확인:
+  logprobs와 `echo`는 chat·completions 모두 미지원 표기. local 0.24.0의
+  chat 표면만 문서를 앞서 구현되어 있음).
+
 결론: Ollama Cloud와 같은 부류 — 추론은 되지만 logprob 표면이 없어
-오늘 기준 exact 평가 불가. z.ai가 logprob을 노출하면(또는 일반
-비코딩 엔드포인트가 다르면) `engine: generic-openai` + `endpoint:
-chat_completions`로 즉시 부착 가능하다.
+오늘 기준 exact 평가 불가. z.ai나 Ollama Cloud가 logprob을 노출하는
+순간 `engine: generic-openai` + `endpoint: chat_completions` +
+`thinking: {disable_field: thinking, disable_value: {type: disabled}}`로
+코드 변경 없이 부착된다. 객체 값 제어는 회귀 테스트로 보장한다.
 
 ## OpenRouter (2026-09-21 실측) — 됨
 
