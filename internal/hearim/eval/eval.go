@@ -103,19 +103,20 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	q := plan.Questions[qi]
 	caps := route.Adapter.Capabilities()
 
-	// Vision gate: image-bearing states need a route that accepts
-	// image_url content parts. Raw completion paths cannot carry them, and
-	// a model explicitly typed chat/thinking is not a VLM.
+	// Vision gate: image-bearing states require an explicit opt-in —
+	// models[].type: vision on a chat route with vision-capable transport.
+	// Unset type must NOT admit images: text models accept image_url parts
+	// silently and return confident garbage (observed live with qwen2.5 on
+	// Ollama), which is worse than a clean 422.
 	if len(plan.Images) > 0 {
 		modelType := ""
 		if route.ModelCfg != nil {
 			modelType = route.ModelCfg.Type
 		}
-		visionModel := modelType == "" || modelType == "vision"
-		if !caps.Vision || route.Endpoint != config.EndpointChatCompletion || !visionModel {
+		if !caps.Vision || route.Endpoint != config.EndpointChatCompletion || modelType != "vision" {
 			return nil, jev.NewError(jev.CodeValidationFailed,
-				"state declares %d image(s); model %s (type %q) is not on a vision-capable chat route (endpoint %s)",
-				len(plan.Images), route.BackendModel, orDefault(modelType, "chat"), route.Endpoint)
+				"state declares %d image(s); model %s must be declared type: vision on a vision-capable chat route (got type %q, endpoint %s)",
+				len(plan.Images), route.BackendModel, orDefault(modelType, "unset"), route.Endpoint)
 		}
 	}
 

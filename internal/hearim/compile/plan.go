@@ -124,8 +124,9 @@ func (c *Compiler) CompileWith(pr *jev.ParsedRequest, backendModel string, promp
 		plan.SystemPrefix = prompt.SystemPrefix
 	}
 
+	redacted := redactImages(pr.State, pr.Images)
 	for _, q := range pr.Questions {
-		cq, err := c.compileQuestion(q, canonicalState, layout, prompt)
+		cq, err := c.compileQuestion(q, canonicalState, layout, prompt, redacted)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +160,99 @@ func defaultDelimiter(candidates []string) string {
 	return "\n"
 }
 
-func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string, layout config.Layout, prompt *config.PromptConfig) (*CompiledQuestion, error) {
+// redactImages replaces image references in the state text with short
+// placeholders. The image itself travels as a chat content part; leaving
+// the base64 payload in the text block both bloats the prompt (~200 tokens
+// per small image) and measurably degrades VLM answers (verified live:
+// label logprobs flipped to the wrong direction with the raw payload
+// present). StateHash and CanonicalState keep the unredacted form, so
+// identity and cache keys are unaffected.
+func redactImages(state any, images []string) string {
+	if len(images) == 0 {
+		return ""
+	}
+	redacted := deepRedact(state, images)
+	out, err := canon.String(redacted)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+func deepRedact(v any, images []string) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, val := range x {
+			if (k == "image" || k == "images") && containsAny(val, images) {
+				out[k] = placeholderFor(val, images)
+				continue
+			}
+			out[k] = deepRedact(val, images)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, e := range x {
+			out = append(out, deepRedact(e, images))
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func containsAny(v any, images []string) bool {
+	switch x := v.(type) {
+	case string:
+		for _, img := range images {
+			if x == img {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if s, ok := e.(string); ok {
+				for _, img := range images {
+					if s == img {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func placeholderFor(v any, images []string) any {
+	switch x := v.(type) {
+	case string:
+		return "<image:" + indexFor(x, images) + ">"
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, e := range x {
+			if s, ok := e.(string); ok {
+				out = append(out, "<image:"+indexFor(s, images)+">")
+			} else {
+				out = append(out, e)
+			}
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func indexFor(s string, images []string) string {
+	for i, img := range images {
+		if s == img {
+			return fmt.Sprintf("%d", i+1)
+		}
+	}
+	return "?"
+}
+
+func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string, layout config.Layout, prompt *config.PromptConfig, redactedState string) (*CompiledQuestion, error) {
 	cands, reduction, err := c.mapCandidates(q)
 	if err != nil {
 		return nil, err
@@ -175,7 +268,11 @@ func (c *Compiler) compileQuestion(q *jev.ParsedQuestion, canonicalState string,
 	}
 	criteria := renderCriteria(q, cands)
 
-	stateBlock := renderStateBlock(canonicalState)
+	stateText := canonicalState
+	if redactedState != "" {
+		stateText = redactedState
+	}
+	stateBlock := renderStateBlock(stateText)
 	questionBlock := renderQuestionBlock(q.Type, instructions)
 	criteriaBlock := renderCriteriaBlock(criteria)
 	marker := answerMarker + planDelimiterHint

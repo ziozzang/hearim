@@ -228,10 +228,10 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 		check("no_hidden_reasoning", !hidden, "")
 	}
 
-	// Cache evidence: llama.cpp tokens_cached / vLLM cached_tokens deltas.
-	rep.Summary.CacheEvidence = res != nil && res.CachedPromptTokens > 0
-	check("cache_evidence", rep.Summary.CacheEvidence,
-		fmt.Sprintf("cached_tokens=%d", cachedOf(res)))
+	// Cache evidence per §12.1: the same prefix run twice must show the
+	// cached-token count INCREASE. A unique nonce keeps the first shot cold
+	// even after the registry probes warmed the base prompt.
+	rep.Summary.CacheEvidence = probeCacheEvidence(ctx, adpt, model, reg, modelCfg, endpoint, cfg, check)
 
 	// Native generate endpoint (informational).
 	rep.Summary.NativeGenerate = hasNative(caps)
@@ -306,11 +306,48 @@ func detectHiddenReasoning(adpt provider.Adapter, res *provider.NextTokenScoreRe
 	return false
 }
 
-func cachedOf(res *provider.NextTokenScoreResult) int {
-	if res == nil {
-		return 0
+// probeCacheEvidence runs two identical scoring calls on a fresh prefix and
+// reports whether the second shot observes more cached prompt tokens than
+// the first (llama.cpp tokens_cached, vLLM/Ollama prompt_tokens_details.
+// cached_tokens). Engines that do not report cached tokens get an
+// informational failure, not a gate failure.
+func probeCacheEvidence(ctx context.Context, adpt provider.Adapter, model string,
+	reg *registry.Registry, modelCfg *config.ModelConfig, endpoint config.EndpointKind,
+	cfg config.CompilerConfig, check func(string, bool, string)) bool {
+
+	nonce := time.Now().UnixNano()
+	prompt := fixedProbePrompt(cfg) + "\n<!-- hearim-cache-probe-" + fmt.Sprintf("%d", nonce) + " -->" + reg.Delimiter
+	ids, texts, _ := reg.Bind(registryLabels(reg))
+	req := provider.NextTokenScoreRequest{
+		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: model},
+		Endpoint:            endpoint,
+		PromptText:          prompt,
+		CandidateTokenIDs:   ids,
+		CandidateTokenTexts: texts,
+		TopK:                adpt.Capabilities().MaxTopLogprobs,
 	}
-	return res.CachedPromptTokens
+	if modelCfg != nil && modelCfg.Thinking != nil {
+		if modelCfg.Thinking.DisableField != "" {
+			req.ReasoningField = modelCfg.Thinking.DisableField
+			req.ReasoningValue = modelCfg.Thinking.DisableValue
+		}
+	}
+	first, err1 := adpt.ScoreNextToken(ctx, req)
+	second, err2 := adpt.ScoreNextToken(ctx, req)
+	if err1 != nil || err2 != nil {
+		check("cache_evidence", false, fmt.Sprintf("probe calls failed: %v / %v", errString(err1), errString(err2)))
+		return false
+	}
+	if !adpt.Capabilities().ReportsCachedTokens {
+		check("cache_evidence", false, "engine does not report cached tokens; prefix reuse unverifiable")
+		return false
+	}
+	delta := second.CachedPromptTokens - first.CachedPromptTokens
+	ok := delta > 0 ||
+		(second.CachedPromptTokens > 0 && second.CachedPromptTokens >= second.PromptTokens)
+	check("cache_evidence", ok, fmt.Sprintf("cold=%d warm=%d delta=%d prompt_tokens=%d",
+		first.CachedPromptTokens, second.CachedPromptTokens, delta, second.PromptTokens))
+	return ok
 }
 
 func hasNative(caps provider.ProviderCapabilities) bool {

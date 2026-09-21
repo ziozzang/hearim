@@ -408,10 +408,20 @@ gemma4-style case where tags persist and close-tag handling is required.
 State objects may declare images via top-level `image` (single URL) or
 `images` (array). Only `https?://` and `data:image/...` URLs are accepted —
 bare paths and other schemes are rejected at validation (state is data, not
-a license to read local files). Up to 8 images, 20 MB per data URL. On
-vision-capable chat routes the state message becomes OpenAI multimodal
-content parts (`image_url`); non-vision routes reject image-bearing states
-with 422.
+a license to read local files). Up to 8 images, 20 MB per data URL. Images
+require an explicit `models[].type: vision` on a vision-capable chat route;
+anything else — including unset type, because text models accept images
+silently and return confident garbage (measured) — is a 422.
+
+The image travels as an OpenAI multimodal `image_url` content part; the
+rendered state text carries a `<image:N>` placeholder instead of the base64
+payload (identity, hash, and prefix keys keep the unredacted form). Measured
+with gemma3:4b: leaving the payload in the text flipped label logprobs to
+the wrong direction; redaction restored correct discrimination (0.755 /
+0.012 / 0.012 across red/blue probes) and cut ~27% of prompt tokens. Small
+VLMs answer free text more readily than labels — irrelevant, hearim scores
+the conditional distribution over declared labels. Budget for low
+`candidate_mass` on vision chat routes.
 
 ### Observability
 
@@ -473,6 +483,9 @@ Package map (all under `internal/hearim/`):
 | `bench` | §12.3 benchmark runner |
 | `selfupdate` | GitHub release self-update with SHA256SUMS verification and background update notices |
 | `metrics` | minimal Prometheus text-exposition registry (stdlib only) |
+
+Per-provider and per-model measured details live in
+[PROVIDERS.md](PROVIDERS.md).
 
 ## Probed capabilities (2026-09-21, real backends)
 

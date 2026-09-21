@@ -386,9 +386,19 @@ gemma4처럼 태그가 남는 경우 `thinking_tags_emitted`로 표시해 close-
 state 객체는 최상위 `image`(단일 URL) 또는 `images`(배열)로 이미지를
 선언할 수 있다. `https?://`와 `data:image/...` URL만 허용한다 — bare
 경로와 다른 스킴은 검증 단계에서 거부된다(state는 데이터이지 로컬 파일을
-읽는 권한이 아니다). 최대 8장, data URL 20MB. 비전 가능 chat 경로에서는
-state 메시지가 OpenAI 멀티모달 콘텐츠 파트(`image_url`)로 변환되고,
-비전이 아닌 경로는 이미지 포함 state를 422로 거부한다.
+읽는 권한이 아니다). 최대 8장, data URL 20MB. 이미지는 비전 가능 chat
+경로에 **명시적 `models[].type: vision`**을 요구한다. 그 외 전부 —
+타입 미지정 포함, 텍스트 모델이 이미지를 조용히 삼키고 그럴듯한 쓰레기를
+반환하기 때문(실측) — 422다.
+
+이미지는 OpenAI 멀티모달 `image_url` 콘텐츠 파트로 전달되고, 렌더링된
+state 텍스트는 base64 페이로드 대신 `<image:N>` placeholder를 담는다
+(식별자·해시·prefix key는 미변경 형태 유지). gemma3:4b로 실측: 텍스트에
+페이로드를 두면 라벨 logprob이 방향을 잃었고, redaction이 판별을 되살렸다
+(빨강/파랑 probe에서 0.755 / 0.012 / 0.012)며 프롬프트 토큰이 약 27%
+줄었다. 소형 VLM은 라벨보다 자유 텍스트로 답하기 쉽다 — 무관하다.
+hearim은 선언된 라벨의 조건부 분포를 채점한다. 비전 chat route는 낮은
+`candidate_mass`를 감안하라.
 
 ## 관측
 
@@ -457,6 +467,8 @@ go vet ./...
 | `bench` | §12.3 벤치마크 실행기 |
 | `selfupdate` | SHA256SUMS 검증 기반 GitHub 릴리즈 자가 업데이트와 백그라운드 알림 |
 | `metrics` | 최소 Prometheus 텍스트 노출 레지스트리(stdlib만) |
+
+프로바이더·모델별 실측 상세는 [PROVIDERS.ko.md](PROVIDERS.ko.md)를 참고하라.
 
 ## 실측 capability (2026-09-21, 실제 백엔드)
 

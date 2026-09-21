@@ -38,6 +38,7 @@ func (f *evalFake) Capabilities() provider.ProviderCapabilities {
 		PromptTokenLogprobs: true,
 		MaxTopLogprobs:      20,
 		MaxSelectedTokenIDs: 256,
+		Vision:              true,
 		Endpoints: []provider.EndpointProfile{
 			{Kind: config.EndpointCompletions, NextTokenLogprobsVerified: true},
 		},
@@ -501,5 +502,33 @@ func TestProbeOnlyRegistrySkipsSelectedTokenIDs(t *testing.T) {
 		if id >= 0 {
 			t.Errorf("negative-ID candidates must stay unresolved, got %d", id)
 		}
+	}
+}
+
+func TestImageRequiresExplicitVisionType(t *testing.T) {
+	// Observed live: qwen2.5 (text) on Ollama accepts image_url parts
+	// silently and returns confident garbage. Unset type must therefore be
+	// rejected even on vision-capable transports.
+	cfg := testConfig(t)
+	fake := &evalFake{logprobs: []float64{-0.5, -1.5}}
+	route := buildRoute(t, fake, cfg) // no ModelCfg -> type unset
+	route.Endpoint = config.EndpointChatCompletion
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, _ := ev.Compiler.Compile(mustParse(t, `{
+	  "model": "m", "state": {"image": "https://x/a.png"},
+	  "questions": {"q": {"type": "noul"}}
+	}`), "gemma4:31b")
+	_, err := ev.EvaluateQuestion(context.Background(), plan, 0, route)
+	if err == nil {
+		t.Fatal("unset model type must reject images")
+	}
+	if !strings.Contains(err.Error(), "type: vision") {
+		t.Errorf("err = %v", err)
+	}
+
+	// Explicit vision type on the same route passes the gate.
+	route.ModelCfg = &config.ModelConfig{Name: "gemma4:31b", Type: "vision"}
+	if _, err := ev.EvaluateQuestion(context.Background(), plan, 0, route); err != nil {
+		t.Fatalf("declared vision model should pass: %v", err)
 	}
 }

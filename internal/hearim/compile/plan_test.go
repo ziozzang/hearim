@@ -335,3 +335,36 @@ func TestCustomTemplateOverride(t *testing.T) {
 		t.Error("identity must reflect the override")
 	}
 }
+
+// TestInfoFirstOrdering pins the KV-cache invariant (TODO.md §5.1): the
+// shared, long-lived content (system block, state) sits at the front of the
+// prompt and the per-question tail (question, criteria, marker) at the end,
+// so question fan-out reuses the state prefill and cross-request traffic
+// reuses the system prefix.
+func TestInfoFirstOrdering(t *testing.T) {
+	plan, _ := mustCompile(t, choiceReq)
+	full := plan.Prompt(plan.Questions[0])
+	sysIdx := strings.Index(full, "<system-one-evaluator")
+	stateIdx := strings.Index(full, "<state")
+	qIdx := strings.Index(full, "<question")
+	critIdx := strings.Index(full, "<criteria>")
+	markerIdx := strings.Index(full, "<answer-label>")
+	if !(sysIdx < stateIdx && stateIdx < qIdx && qIdx < critIdx && critIdx < markerIdx) {
+		t.Errorf("ordering broken: sys=%d state=%d question=%d criteria=%d marker=%d",
+			sysIdx, stateIdx, qIdx, critIdx, markerIdx)
+	}
+}
+
+// TestStatePrefixStableAcrossRequests: two distinct requests carrying the
+// same state must produce byte-identical prefixes — that is what engines
+// match in their prefix caches.
+func TestStatePrefixStableAcrossRequests(t *testing.T) {
+	a, _ := mustCompile(t, `{"model":"m","state":{"x":1},"questions":{"q1":{"type":"noul","instructions":"one"}}}`)
+	b, _ := mustCompile(t, `{"model":"m","state":{"x":1},"questions":{"z9":{"type":"choice","criteria":{"a":null,"b":null}}}}`)
+	if a.Questions[0].PromptPrefix != b.Questions[0].PromptPrefix {
+		t.Error("same state must yield identical prompt prefixes across requests")
+	}
+	if a.CommonPrefixHash("", "rev") != b.CommonPrefixHash("", "rev") {
+		t.Error("prefix cache key must match for the same state")
+	}
+}

@@ -2,6 +2,7 @@ package compile
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,41 @@ func TestImagePartsHelper(t *testing.T) {
 		if p["type"] != "image_url" {
 			t.Errorf("part = %v", p)
 		}
+	}
+}
+
+func TestStateTextRedactsImagePayloads(t *testing.T) {
+	dataURL := "data:image/png;base64," + strings.Repeat("QUJD", 100) // 400 chars of payload
+	plan, pr := mustCompile(t, `{
+	  "model": "m",
+	  "state": {"image": "`+dataURL+`", "note": "keep"},
+	  "questions": {"q": {"type": "noul"}}
+	}`)
+	full := plan.Prompt(plan.Questions[0])
+	if strings.Contains(full, "QUJD") {
+		t.Error("base64 payload leaked into the state text block")
+	}
+	if !strings.Contains(full, "<image:1>") {
+		t.Errorf("placeholder missing:\n%s", full)
+	}
+	if !strings.Contains(full, "keep") {
+		t.Error("non-image state content lost")
+	}
+	// Identity stays on the unredacted form.
+	if len(pr.Images) != 1 || pr.Images[0] != dataURL {
+		t.Errorf("parsed images = %v", pr.Images)
+	}
+	if plan.CanonicalState != `{"image":"`+dataURL+`","note":"keep"}` {
+		t.Errorf("canonical state must keep the full form: %s", plan.CanonicalState)
+	}
+	if !strings.Contains(full, "\"note\":\"keep\"") {
+		t.Error("state JSON structure broken")
+	}
+}
+
+func TestNoImagesKeepsStateVerbatim(t *testing.T) {
+	plan, _ := mustCompile(t, choiceReq)
+	if !strings.Contains(plan.Prompt(plan.Questions[0]), `"ticket":"결제 후 다운로드 링크를 받지 못했습니다."`) {
+		t.Error("text-only state must render verbatim")
 	}
 }

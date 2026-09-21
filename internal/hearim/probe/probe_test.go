@@ -10,7 +10,7 @@ import (
 	"hearim/internal/hearim/scoring"
 )
 
-type probeFake struct{}
+type probeFake struct{ scoreCalls int }
 
 func (f *probeFake) ID() string                { return "fake" }
 func (f *probeFake) Engine() config.EngineKind { return config.EngineVLLM }
@@ -22,6 +22,7 @@ func (f *probeFake) Capabilities() provider.ProviderCapabilities {
 		PromptTokenLogprobs: true,
 		MaxTopLogprobs:      20,
 		MaxSelectedTokenIDs: 256,
+		ReportsCachedTokens: true,
 		Endpoints: []provider.EndpointProfile{
 			{Kind: config.EndpointCompletions, NextTokenLogprobsVerified: true},
 		},
@@ -37,6 +38,7 @@ func (f *probeFake) Tokenize(ctx context.Context, model, text string) ([]int, er
 }
 
 func (f *probeFake) ScoreNextToken(ctx context.Context, req provider.NextTokenScoreRequest) (*provider.NextTokenScoreResult, error) {
+	f.scoreCalls++
 	base, _ := f.Tokenize(ctx, "", req.PromptText)
 	out := map[int]float64{}
 	for i, text := range req.CandidateTokenTexts {
@@ -49,10 +51,12 @@ func (f *probeFake) ScoreNextToken(ctx context.Context, req provider.NextTokenSc
 		CandidateLogprobs:    out,
 		AllCandidatesPresent: len(out) == len(req.CandidateTokenTexts),
 		PromptTokens:         len(base),
-		CachedPromptTokens:   10,
-		ScoringMethod:        "selected-token-ids",
-		ProbabilitySpace:     provider.SpaceRaw,
-		GeneratedText:        "1",
+		// Warm-up simulation: later calls with the same prefix observe more
+		// cached tokens, so the two-shot cache probe sees a positive delta.
+		CachedPromptTokens: f.scoreCalls,
+		ScoringMethod:      "selected-token-ids",
+		ProbabilitySpace:   provider.SpaceRaw,
+		GeneratedText:      "1",
 	}, nil
 }
 
@@ -102,6 +106,40 @@ func TestProbeReportGoGate(t *testing.T) {
 	}
 	if !rep.Summary.ThinkingControlVerified || rep.Summary.ThinkingTagsEmitted {
 		t.Errorf("thinking control summary = %+v", rep.Summary)
+	}
+	if !rep.Summary.CacheEvidence {
+		for _, c := range rep.Checks {
+			if c.Name == "cache_evidence" {
+				t.Errorf("cache evidence should pass with warming calls: %s", c.Detail)
+			}
+		}
+	}
+}
+
+// coldFake never reports cached tokens: the two-shot probe must not claim
+// prefix-reuse evidence.
+type coldFake struct{ probeFake }
+
+func (f *coldFake) ScoreNextToken(ctx context.Context, req provider.NextTokenScoreRequest) (*provider.NextTokenScoreResult, error) {
+	res, err := f.probeFake.ScoreNextToken(ctx, req)
+	if res != nil {
+		res.CachedPromptTokens = 0
+	}
+	return res, err
+}
+
+func TestProbeCacheEvidenceFailsWhenCold(t *testing.T) {
+	cfg := config.CompilerConfig{
+		TemplateVersion:     "systemone-v1",
+		DelimiterCandidates: []string{"\n"},
+		LabelAlphabets:      [][]string{{"1", "2"}},
+	}
+	rep, err := Run(context.Background(), &coldFake{}, "m", cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Summary.CacheEvidence {
+		t.Error("constant-zero cached tokens must not pass cache evidence")
 	}
 }
 
