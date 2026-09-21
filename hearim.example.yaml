@@ -1,0 +1,131 @@
+# hearim example configuration (TODO.md §14 "recommended initial setup").
+# Copy to hearim.yaml and adjust. Secrets use ${ENV_VAR} expansion — never
+# paste API keys into this file.
+
+gateway:
+  public_endpoint: /v1/systemone
+  compatibility: typesafe-systemone-v1
+  default_model: jev-local-auto
+  strict_candidate_probabilities: true
+  confidence_method: normalized-entropy-v1
+  # partial_answers: true   # non-standard: per-question failures don't fail the request
+
+server:
+  addr: ":8080"
+
+auth:
+  api_keys:
+    - "${HEARIM_API_KEY:-local-dev-key}"
+  # api_key_file: /etc/hearim/keys
+
+log:
+  level: info
+  format: text
+  raw_state: false          # §11: hash/token counts only
+
+ollama:                     # defaults for engine: ollama providers
+  base_url: https://ollama.com/v1
+  concurrency: 3            # Ollama Pro concurrent request limit
+  request_timeout: 30s
+  max_retries: 1
+
+providers:
+  - id: ollama-cloud
+    engine: ollama
+    base_url: https://ollama.com/v1
+    api_key: ${OLLAMA_API_KEY}
+    models: ["gemma4:31b", "deepseek-v4.1-flash", "gpt-oss:20b"]
+    endpoint_preference: [completions, chat_completions]
+
+  - id: llama-cpp-local
+    engine: llama.cpp
+    base_url: http://llama-server:8080
+    endpoint_preference: [native_generate, completions]
+    cache_prompt: true
+
+  - id: vllm-local
+    engine: vllm
+    base_url: http://vllm:8000
+    models: ["google/gemma-4-31B-it"]
+    endpoint_preference: [completions, chat_completions]
+    selected_token_field: logprob_token_ids
+    prefix_caching: automatic
+
+  - id: sglang-local
+    engine: sglang
+    base_url: http://sglang:30000
+    endpoint_preference: [native_generate, completions, chat_completions]
+    selected_token_field: token_ids_logprob
+    prefix_caching: radix
+
+model_aliases:
+  jev-local-auto: policy:auto-v1
+  jev-gemma4: ollama-cloud:gemma4:31b
+  jev-deepseek-flash: ollama-cloud:deepseek-v4.1-flash
+  jev-gpt-oss-20b: ollama-cloud:gpt-oss:20b
+  jev-vllm: vllm-local:google/gemma-4-31B-it
+
+backend_policy:
+  endpoint_preference:
+    - completions
+    - native_generate
+    - chat_completions
+  require_no_reasoning_for_chat: true
+  reject_hidden_reasoning: true
+  reject_prompt_only_reasoning_suppression: true
+
+compiler:
+  template_version: systemone-v1
+  default_layout: state-major
+  build_token_registry_on_startup: true
+  label_alphabets:
+    - ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+    - ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+       "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
+  # max_exact_choice_options: capability-derived when unset
+  max_tokens: 1
+  temperature: 1
+  top_p: 1
+  delimiter_candidates: ["\n", " ", ":"]
+  retry_top_logprobs_factor: 4
+
+scoring:
+  primary: selected_token_ids
+  fallbacks: [top_k, teacher_forced_label, constrained_vocab]
+  choice_text_mode: disabled        # disabled | fallback | preferred
+  continuation_normalization: pmi   # sum | token-mean | pmi
+  token_healing: exact_lcp
+  calibration_scope: model-engine-template-mode
+  calibration_tau: {}               # per-mode temperature overrides
+  min_candidate_mass: 0.01
+
+router:
+  candidates:
+    - model: gemma4:31b
+      provider: ollama-cloud
+      input_per_1m: 0.14
+      cached_input_per_1m: 0.05
+      output_per_1m: 0.40
+      quality_gate_pass: true
+    - model: deepseek-v4.1-flash
+      provider: ollama-cloud
+      input_per_1m: 0.15
+      cached_input_per_1m: 0.003
+      output_per_1m: 0.60
+      quality_gate_pass: true
+    - model: gpt-oss:20b
+      provider: ollama-cloud
+      input_per_1m: 0.07
+      cached_input_per_1m: 0.035
+      output_per_1m: 0.30
+      quality_gate_pass: false     # enable after quality verification
+  cache_ratio_break_even_gemma_vs_deepseek: 0.1754
+  expected_cache_ratio: 0.20
+  require_quality_gate: true
+  auto: true
+
+budget:
+  included_usd: 60
+  warn_at: 0.70
+  throttle_at: 0.90
+  hard_stop_at: 1.00

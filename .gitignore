@@ -1,0 +1,14 @@
+# binaries (root-anchored: must not match cmd/hearim or internal/hearim)
+/hearim
+/bin/
+
+# runtime data (token label registries)
+/data/
+
+# local configuration — secrets live in env vars, but keep local edits out
+hearim.yaml
+*.local.yaml
+
+# test artifacts
+*.out
+coverage.txt
