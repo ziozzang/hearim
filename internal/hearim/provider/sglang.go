@@ -63,7 +63,7 @@ func (a *SGLangAdapter) Tokenize(ctx context.Context, model, text string) ([]int
 		Tokens   []int `json:"tokens"`
 	}
 	// Model gateway exposes /v1/tokenize; single runtime may expose /tokenize.
-	for _, path := range []string{"/v1/tokenize", "/tokenize"} {
+	for _, path := range []string{pathFor(a.cfg, PathTokenize), "/v1/tokenize", "/tokenize"} {
 		if err := a.hc.do(ctx, "POST", path, map[string]any{"text": text, "add_special_tokens": true}, &out); err == nil {
 			if len(out.InputIDs) > 0 {
 				return out.InputIDs, nil
@@ -122,7 +122,7 @@ func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRe
 	MergeExtras(body, ModelExtras(a.cfg, req.Model.Model))
 
 	var raw json.RawMessage
-	if err := a.hc.do(ctx, "POST", "/generate", body, &raw); err != nil {
+	if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathGenerate), body, &raw); err != nil {
 		return nil, err
 	}
 	return parseSGLangScore(raw, req.CandidateTokenIDs, req.CandidateTokenTexts, method, space)
@@ -224,7 +224,7 @@ func (a *SGLangAdapter) ScoreContinuations(ctx context.Context, req Continuation
 		}
 		MergeExtras(body, ModelExtras(a.cfg, req.Model.Model))
 		var raw json.RawMessage
-		if err := a.hc.do(ctx, "POST", "/generate", body, &raw); err != nil {
+		if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathGenerate), body, &raw); err != nil {
 			return ContinuationScore{}, err
 		}
 		var resp struct {
@@ -296,7 +296,7 @@ func (a *SGLangAdapter) Health(ctx context.Context) (Health, error) {
 		Version []any  `json:"version"`
 		Health  string `json:"health"`
 	}
-	if err := a.hc.do(ctx, "GET", "/get_server_info", nil, &out); err != nil {
+	if err := a.hc.do(ctx, "GET", pathFor(a.cfg, PathHealth), nil, &out); err != nil {
 		return Health{OK: false, Detail: err.Error()}, err
 	}
 	return Health{OK: true}, nil

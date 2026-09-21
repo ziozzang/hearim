@@ -74,6 +74,17 @@ providers:
     endpoint_preference: [native_generate, completions]
     cache_prompt: true
 
+  # Any OpenAI-shaped gateway: force the surface, remap paths, attach query
+  # flags and custom headers; whitelisted cost/usage response headers pass
+  # through to clients as x-jev-upstream-*.
+  - id: my-gateway
+    engine: generic-openai
+    base_url: https://gw.internal
+    # endpoint: chat_completions          # force the scoring surface
+    # paths: {chat_completions: /api/v2/chat, completions: /api/v2/completions}
+    # query_params: {detailed: "true"}
+    # headers: {X-Api-Key: ${GW_TOKEN}}
+
   - id: vllm-local
     engine: vllm
     # base_urls: an endpoint pool — round-robin with retry failover

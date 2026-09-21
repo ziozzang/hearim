@@ -201,14 +201,23 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 	modelCfg := pcfg.Models.Find(model)
 	route.ModelCfg = modelCfg
 
-	// Mark verified endpoints from the static capabilities; real verification
-	// happens in `hearim probe` and updates capabilities.
-	if e, err := provider.ResolveExactRoute(adpt.Capabilities(), s.Cfg.BackendPolicy); err == nil {
+	// Endpoint resolution order: model force > provider force >
+	// capability-based resolution (§3.4) > preference head. An explicit pin
+	// targets gateways that expose only one surface; probes still verify
+	// logprobs on it.
+	if forced := provider.ForcedEndpoint(pcfg, modelCfg); forced != nil {
+		route.Endpoint = *forced
+		s.Logger.Warn("endpoint force-pinned by configuration; capability resolution skipped",
+			"provider", providerID, "model", model, "endpoint", *forced)
+	} else if e, err := provider.ResolveExactRoute(adpt.Capabilities(), s.Cfg.BackendPolicy); err == nil {
 		route.Endpoint = e.Kind
 	}
 	// §3.4 veto: a model whose reasoning cannot be fully disabled has no
 	// exact chat route; it must use a verified completion-style endpoint.
-	if provider.ModelIsThinking(modelCfg) && route.Endpoint == config.EndpointChatCompletion {
+	// An explicit endpoint pin overrides the veto (logged) — the operator
+	// owns that decision.
+	forced := provider.ForcedEndpoint(pcfg, modelCfg)
+	if provider.ModelIsThinking(modelCfg) && route.Endpoint == config.EndpointChatCompletion && (forced == nil || *forced != config.EndpointChatCompletion) {
 		alt := config.EndpointKind("")
 		for _, e := range adpt.Capabilities().Endpoints {
 			if (e.Kind == config.EndpointCompletions || e.Kind == config.EndpointNativeGenerate) &&
@@ -224,6 +233,9 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 		}
 		route.Endpoint = alt
 		s.Logger.Warn("thinking model routed off chat endpoint", "model", model, "endpoint", alt)
+	} else if provider.ModelIsThinking(modelCfg) && route.Endpoint == config.EndpointChatCompletion {
+		s.Logger.Warn("thinking model pinned to chat endpoint by configuration; §3.4 veto overridden",
+			"model", model)
 	}
 
 	// Pricing lookup by model name.

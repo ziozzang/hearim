@@ -62,7 +62,7 @@ func (a *LlamaCppAdapter) Tokenize(ctx context.Context, model, text string) ([]i
 		"add_special":   true,
 		"parse_special": true,
 	}
-	if err := a.hc.do(ctx, "POST", "/tokenize", body, &out); err != nil {
+	if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathTokenize), body, &out); err != nil {
 		return nil, fmt.Errorf("provider: llama.cpp tokenize: %w", err)
 	}
 	return out.Tokens, nil
@@ -154,7 +154,7 @@ func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScore
 		TokensEvaluated int `json:"tokens_evaluated"`
 		TokensPredicted int `json:"n_predict"`
 	}
-	if err := a.hc.do(ctx, "POST", "/completion", body, &out); err != nil {
+	if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathCompletion), body, &out); err != nil {
 		return nil, err
 	}
 	if len(out.CompletionProbabilities) == 0 {
@@ -232,7 +232,7 @@ func (a *LlamaCppAdapter) Health(ctx context.Context) (Health, error) {
 		BuildInfo map[string]string `json:"build_info"`
 		Status    string            `json:"status"`
 	}
-	if err := a.hc.do(ctx, "GET", "/health", nil, &out); err != nil {
+	if err := a.hc.do(ctx, "GET", pathFor(a.cfg, PathHealth), nil, &out); err != nil {
 		return Health{OK: false, Detail: err.Error()}, err
 	}
 	return Health{OK: true, Detail: out.Status}, nil

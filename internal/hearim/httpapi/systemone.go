@@ -192,6 +192,11 @@ func setDiagnostics(w http.ResponseWriter, m eval.Meta) {
 		// §8.5: cached token counts the upstream reported for this request.
 		h.Set("x-jev-cached-input-tokens", strconv.FormatInt(m.TotalCachedTokens, 10))
 	}
+	for k, v := range m.UpstreamHeaders {
+		// Whitelisted upstream cost/usage/rate-limit headers pass through
+		// with a stable prefix.
+		h.Set("x-jev-upstream-"+k, v)
+	}
 }
 
 func writeJevError(w http.ResponseWriter, r *http.Request, e *jev.Error) {

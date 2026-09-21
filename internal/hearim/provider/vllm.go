@@ -64,18 +64,22 @@ func (a *VLLMAdapter) Tokenize(ctx context.Context, model, text string) ([]int, 
 	var out struct {
 		Tokens []int `json:"tokens"`
 	}
-	if err := a.hc.do(ctx, "POST", "/tokenize", map[string]any{"model": model, "prompt": text}, &out); err != nil {
+	if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathTokenize), map[string]any{"model": model, "prompt": text}, &out); err != nil {
 		return nil, fmt.Errorf("provider: vllm tokenize: %w", err)
 	}
 	return out.Tokens, nil
 }
 
 func (a *VLLMAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	// Endpoint forcing applies (chat-pinned gateways).
+	if req.Endpoint == config.EndpointChatCompletion {
+		return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
+	}
 	field := a.cfg.SelectedTokenField
 	if field == "" {
 		field = "logprob_token_ids"
 	}
-	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, field, ModelExtras(a.cfg, req.Model.Model))
+	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, field, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
 }
 
 // ScoreContinuations teacher-forces prefix+continuation with prompt_logprobs
@@ -104,7 +108,7 @@ func (a *VLLMAdapter) ScoreContinuations(ctx context.Context, req ContinuationSc
 			},
 		}
 		var out openaiResponse
-		if err := a.hc.do(ctx, "POST", "/v1/completions", body, &out); err != nil {
+		if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathCompletions), body, &out); err != nil {
 			return ContinuationScore{}, err
 		}
 		if len(out.Choices) == 0 {
@@ -223,7 +227,7 @@ func (a *VLLMAdapter) Health(ctx context.Context) (Health, error) {
 	var out struct {
 		Version string `json:"version"`
 	}
-	if err := a.hc.do(ctx, "GET", "/version", nil, &out); err != nil {
+	if err := a.hc.do(ctx, "GET", pathFor(a.cfg, PathHealth), nil, &out); err != nil {
 		return Health{OK: false, Detail: err.Error()}, err
 	}
 	a.caps.EngineVersion = out.Version

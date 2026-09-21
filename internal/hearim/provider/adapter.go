@@ -141,6 +141,9 @@ type NextTokenScoreResult struct {
 	// token; the full completion for wait-close). Probes use it to verify
 	// whether a model-card thinking control actually suppressed reasoning.
 	GeneratedText string
+	// UpstreamHeaders carries whitelisted cost/usage/rate-limit headers
+	// from the upstream response for client passthrough.
+	UpstreamHeaders map[string]string
 }
 
 // ContinuationScoreRequest teacher-forces full choice texts (TODO.md §3.11

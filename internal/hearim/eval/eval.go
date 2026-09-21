@@ -51,6 +51,9 @@ type QuestionResult struct {
 	ProbabilitySpace string
 	Attempts         []string
 	ProfileID        string
+	// UpstreamHeaders carries whitelisted cost/usage/rate-limit headers
+	// from the winning upstream response.
+	UpstreamHeaders map[string]string
 }
 
 // Meta summarizes a whole evaluation for headers and logs.
@@ -67,6 +70,9 @@ type Meta struct {
 	// TotalCachedTokens is the sum of server-REPORTED cached input tokens
 	// across questions (§8.5: reported only, never estimated).
 	TotalCachedTokens int64
+	// UpstreamHeaders merges per-question whitelisted upstream headers
+	// (first value wins) for client passthrough.
+	UpstreamHeaders map[string]string
 }
 
 // Evaluator executes compiled plans against a route.
@@ -285,6 +291,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	res.CandidateMass = mass
 	res.ScoringMethod = method
 	res.ProbabilitySpace = space
+	res.UpstreamHeaders = usage.UpstreamHeaders
 	res.Attempts = attempts
 	res.InputTokens = int64(usage.PromptTokens)
 	res.OutputTokens = int64(1)
@@ -502,6 +509,14 @@ func MetaFrom(route Route, results []*QuestionResult, cfg *config.Config) Meta {
 		}
 		m.TotalCandidateMass += r.CandidateMass
 		m.TotalCachedTokens += r.CachedTokens
+		for k, v := range r.UpstreamHeaders {
+			if m.UpstreamHeaders == nil {
+				m.UpstreamHeaders = map[string]string{}
+			}
+			if _, exists := m.UpstreamHeaders[k]; !exists {
+				m.UpstreamHeaders[k] = v
+			}
+		}
 	}
 	sort.Strings(m.ScoringMethods)
 	return m

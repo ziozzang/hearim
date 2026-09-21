@@ -151,6 +151,36 @@ type ProviderConfig struct {
 	MaxTopLogprobs int `yaml:"max_top_logprobs" json:"max_top_logprobs"`
 	// HealthPath overrides the health probe path.
 	HealthPath string `yaml:"health_path" json:"health_path"`
+	// Endpoint force-pins the scoring surface (chat_completions |
+	// completions | native_generate | native_chat), overriding capability
+	// resolution. Useful for gateways that only expose one surface; probe
+	// still verifies logprobs on it.
+	Endpoint *EndpointKind `yaml:"endpoint" json:"endpoint"`
+	// Paths overrides the upstream URL paths per surface. Keys are logical
+	// names; defaults are engine-specific (see the provider package).
+	Paths *PathsConfig `yaml:"paths" json:"paths"`
+	// QueryParams are appended to every upstream request URL — for
+	// providers whose behavior switches on flags like detailed=true.
+	QueryParams map[string]string `yaml:"query_params" json:"query_params"`
+	// Headers are set on every upstream request in addition to auth —
+	// provider-specific keys like X-Api-Key, HTTP-Referer, X-Title.
+	// Values support ${ENV} expansion like the rest of the config.
+	Headers map[string]string `yaml:"headers" json:"headers"`
+}
+
+// PathsConfig overrides upstream URL paths. All values must start with "/".
+// Defaults per engine: OpenAI-compatible surfaces use /v1/completions and
+// /v1/chat/completions; llama.cpp uses /completion and /tokenize; SGLang
+// uses /generate; Ollama native uses /api/*.
+type PathsConfig struct {
+	Completions     string `yaml:"completions" json:"completions"`
+	ChatCompletions string `yaml:"chat_completions" json:"chat_completions"`
+	// Completion is llama.cpp's native /completion surface.
+	Completion string `yaml:"completion" json:"completion"`
+	// Generate is SGLang's native /generate surface.
+	Generate string `yaml:"generate" json:"generate"`
+	Tokenize string `yaml:"tokenize" json:"tokenize"`
+	Health   string `yaml:"health" json:"health"`
 }
 
 // ModelConfig is one upstream model with optional metadata. Type declares
@@ -172,6 +202,9 @@ type ModelConfig struct {
 	// gemma4's toggle thinking via a control token at the start of the
 	// system prompt, which no request field can express). See PromptConfig.
 	Prompt *PromptConfig `yaml:"prompt" json:"prompt,omitempty"`
+	// Endpoint force-pins this model's scoring surface, overriding both the
+	// provider setting and capability resolution.
+	Endpoint *EndpointKind `yaml:"endpoint" json:"endpoint,omitempty"`
 }
 
 // PromptConfig force-reassigns the prompt shape per model.
@@ -678,6 +711,21 @@ func (c *Config) Validate() error {
 		if p.Concurrency < 1 {
 			return fmt.Errorf("config: provider %q: concurrency must be >= 1", p.ID)
 		}
+		if p.Endpoint != nil {
+			switch *p.Endpoint {
+			case EndpointCompletions, EndpointChatCompletion, EndpointNativeGenerate, EndpointNativeChat:
+			default:
+				return fmt.Errorf("config: provider %q: unknown endpoint %q", p.ID, *p.Endpoint)
+			}
+		}
+		if err := validatePaths(p.Paths); err != nil {
+			return fmt.Errorf("config: provider %q: %w", p.ID, err)
+		}
+		for k, v := range p.Headers {
+			if strings.ContainsAny(k, ": \r\n") || v == "" {
+				return fmt.Errorf("config: provider %q: invalid header %q", p.ID, k)
+			}
+		}
 	}
 	for alias, target := range c.ModelAliases {
 		if !strings.Contains(target, ":") {
@@ -689,6 +737,15 @@ func (c *Config) Validate() error {
 		parts := strings.SplitN(target, ":", 2)
 		if !seen[parts[0]] {
 			return fmt.Errorf("config: model_alias %q references unknown provider %q", alias, parts[0])
+		}
+	}
+	for _, mc := range aliasModels(c) {
+		if mc.Endpoint != nil {
+			switch *mc.Endpoint {
+			case EndpointCompletions, EndpointChatCompletion, EndpointNativeGenerate, EndpointNativeChat:
+			default:
+				return fmt.Errorf("config: model %q: unknown endpoint %q", mc.Name, *mc.Endpoint)
+			}
 		}
 	}
 	for alias, chain := range c.ModelAliasChains {
@@ -734,6 +791,34 @@ func (t budgetTiers) valid() bool {
 
 // StrictMode reports whether strict candidate probability recovery is on.
 func (c *Config) StrictMode() bool { return *c.Gateway.StrictCandidateProbabilities }
+
+func aliasModels(c *Config) []ModelConfig {
+	var out []ModelConfig
+	for _, p := range c.Providers {
+		out = append(out, p.Models...)
+	}
+	return out
+}
+
+func validatePaths(p *PathsConfig) error {
+	if p == nil {
+		return nil
+	}
+	fields := map[string]string{
+		"completions":      p.Completions,
+		"chat_completions": p.ChatCompletions,
+		"completion":       p.Completion,
+		"generate":         p.Generate,
+		"tokenize":         p.Tokenize,
+		"health":           p.Health,
+	}
+	for name, v := range fields {
+		if v != "" && !strings.HasPrefix(v, "/") {
+			return fmt.Errorf("paths.%s must start with '/' (got %q)", name, v)
+		}
+	}
+	return nil
+}
 
 // LoadAPIKeys resolves configured API keys, including the key file.
 func (c *Config) LoadAPIKeys() ([]string, error) {

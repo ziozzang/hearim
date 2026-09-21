@@ -254,7 +254,7 @@ func matchByText(entries []openaiLogprobEntry, text string) (float64, bool) {
 // servers. selectedField ("logprob_token_ids"/... ) enables direct ID
 // requests when the server supports it; otherwise top-K is used.
 func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScoreRequest,
-	model string, selectedField string, extras map[string]any) (*NextTokenScoreResult, error) {
+	model string, selectedField string, extras map[string]any, completionsPath string) (*NextTokenScoreResult, error) {
 
 	maxTokens := 1
 	method0 := "" // set when wait-close scanning applies
@@ -306,7 +306,8 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 	}
 
 	var out openaiResponse
-	if err := hc.do(ctx, "POST", "/v1/completions", body, &out); err != nil {
+	hdrs, err := hc.doCapture(ctx, "POST", completionsPath, body, &out)
+	if err != nil {
 		return nil, err
 	}
 	if len(out.Choices) == 0 || out.Choices[0].Logprobs == nil {
@@ -341,6 +342,7 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 		ScoringMethod:        method,
 		ProbabilitySpace:     space,
 		GeneratedText:        out.Choices[0].Text,
+		UpstreamHeaders:      CaptureHeaders(hdrs),
 	}
 	return res, nil
 }
@@ -402,7 +404,7 @@ type openaiChatResponse struct {
 // scoreViaChat is the chat-completions scoring path for chat-only backends
 // (TODO.md §3.4, §5.1 chat variant). The first visible assistant token's
 // top_logprobs restore the candidate distribution.
-func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest, model string, extras map[string]any) (*NextTokenScoreResult, error) {
+func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest, model string, extras map[string]any, chatPath string) (*NextTokenScoreResult, error) {
 	msgs := req.ChatMessages
 	if len(msgs) == 0 && req.PromptText != "" {
 		msgs = compile.PromptToMessages(req.PromptText)
@@ -448,7 +450,8 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		}
 	}
 	var out openaiChatResponse
-	if err := hc.do(ctx, "POST", "/v1/chat/completions", body, &out); err != nil {
+	hdrs, err := hc.doCapture(ctx, "POST", chatPath, body, &out)
+	if err != nil {
 		return nil, err
 	}
 	if len(out.Choices) == 0 || out.Choices[0].Logprobs == nil ||
@@ -497,6 +500,7 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		res.CachedPromptTokens = out.Usage.PromptTokensDetails.CachedTokens
 	}
 	res.GeneratedText = out.Choices[0].Message.Content
+	res.UpstreamHeaders = CaptureHeaders(hdrs)
 	return res, nil
 }
 

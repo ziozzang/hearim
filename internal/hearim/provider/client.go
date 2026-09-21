@@ -57,12 +57,14 @@ func classifyStatus(status int, body string) *UpstreamError {
 // httpClient wraps one provider's base URL with auth, timeouts, retries and
 // jittered backoff. Raw request/response bodies are never logged.
 type httpClient struct {
-	base     *url.URL
-	apiKey   string
-	client   *http.Client
-	maxRetry int
-	roots    []*url.URL
-	rr       uint64
+	base       *url.URL
+	apiKey     string
+	client     *http.Client
+	maxRetry   int
+	roots      []*url.URL
+	rr         uint64
+	query      url.Values
+	extraHeads map[string]string
 }
 
 func newHTTPClient(cfg config.ProviderConfig) *httpClient {
@@ -91,12 +93,18 @@ func newHTTPClient(cfg config.ProviderConfig) *httpClient {
 	if len(roots) == 0 {
 		roots = []*url.URL{{Scheme: "http", Host: "invalid"}}
 	}
+	q := url.Values{}
+	for k, v := range cfg.QueryParams {
+		q.Set(k, v)
+	}
 	return &httpClient{
-		base:     roots[0],
-		roots:    roots,
-		apiKey:   cfg.APIKey,
-		client:   &http.Client{Timeout: cfg.RequestTimeout},
-		maxRetry: cfg.MaxRetries,
+		base:       roots[0],
+		roots:      roots,
+		apiKey:     cfg.APIKey,
+		client:     &http.Client{Timeout: cfg.RequestTimeout},
+		maxRetry:   cfg.MaxRetries,
+		query:      q,
+		extraHeads: cfg.Headers,
 	}
 }
 
@@ -122,11 +130,18 @@ func (c *httpClient) rootAt(start, attempt int) *url.URL {
 // do issues a request; out (when non-nil) receives the decoded JSON body.
 // Retries apply only to classified retriable statuses and transport errors.
 func (c *httpClient) do(ctx context.Context, method, path string, body, out any) error {
+	_, err := c.doCapture(ctx, method, path, body, out)
+	return err
+}
+
+// doCapture is do with the final response headers returned for passthrough
+// (cost/usage/rate-limit style headers from the winning attempt).
+func (c *httpClient) doCapture(ctx context.Context, method, path string, body, out any) (http.Header, error) {
 	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("provider: encode request: %w", err)
+			return nil, fmt.Errorf("provider: encode request: %w", err)
 		}
 		payload = b
 	}
@@ -141,13 +156,13 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 			jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(backoff + jitter):
 			}
 		}
 		req, err := c.newRequest(ctx, method, path, payload, c.rootAt(start, attempt))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		resp, err := c.client.Do(req)
 		if err != nil {
@@ -155,6 +170,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 			continue
 		}
 		data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		hdrs := resp.Header
 		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("provider: read response: %w", err)
@@ -166,17 +182,17 @@ func (c *httpClient) do(ctx context.Context, method, path string, body, out any)
 				lastErr = ue
 				continue
 			}
-			return ue
+			return nil, ue
 		}
 		if out == nil {
-			return nil
+			return hdrs, nil
 		}
 		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("provider: decode response: %w", err)
+			return nil, fmt.Errorf("provider: decode response: %w", err)
 		}
-		return nil
+		return hdrs, nil
 	}
-	return lastErr
+	return nil, lastErr
 }
 
 func (c *httpClient) newRequest(ctx context.Context, method, path string, payload []byte, root *url.URL) (*http.Request, error) {
@@ -190,6 +206,24 @@ func (c *httpClient) newRequest(ctx context.Context, method, path string, payloa
 	req.Header.Set("User-Agent", "hearim/0.1")
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	// Provider-configured extra headers (X-Api-Key, HTTP-Referer, ...) and
+	// query flags (detailed=true, ...) ride on every upstream call. Explicit
+	// headers may override Authorization; transport-managed fields may not.
+	for k, v := range c.extraHeads {
+		if strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Host") {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	if len(c.query) > 0 {
+		q := req.URL.Query()
+		for k, vs := range c.query {
+			for _, v := range vs {
+				q.Set(k, v)
+			}
+		}
+		req.URL.RawQuery = q.Encode()
 	}
 	return req, nil
 }
@@ -241,6 +275,37 @@ func (c *httpClient) doRaw(ctx context.Context, method, path string, body any) (
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	return resp.StatusCode, data, err
+}
+
+// InterestingHeader reports whether an upstream response header is worth
+// passing through to callers: cost/billing, usage, rate limits, and request
+// correlation. Whitelisted by prefix to avoid leaking provider internals.
+func InterestingHeader(name string) bool {
+	n := strings.ToLower(name)
+	for _, p := range []string{"x-cost", "x-usage", "x-ratelimit", "x-remaining", "x-quota", "x-billed"} {
+		if strings.HasPrefix(n, p) {
+			return true
+		}
+	}
+	switch n {
+	case "x-request-id", "retry-after":
+		return true
+	}
+	return false
+}
+
+// CaptureHeaders filters a response header map down to the passthrough set.
+func CaptureHeaders(h http.Header) map[string]string {
+	out := map[string]string{}
+	for k, vs := range h {
+		if InterestingHeader(k) && len(vs) > 0 {
+			out[strings.ToLower(k)] = vs[0]
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // IsNotFound reports 404-shaped upstream errors (missing endpoints/models).

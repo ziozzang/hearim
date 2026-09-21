@@ -229,6 +229,34 @@ bench 코퍼스 형식:
    provider로 해석된다. 여러 provider가 같은 이름을 서빙하면 명시적
    오류로 알린다
 
+## 임의 프로바이더: 서피스·경로·파라미터·헤더
+
+provider별 노브를 조합하면 어떤 OpenAI형 게이트웨이든 붙일 수 있다:
+
+```yaml
+providers:
+  - id: my-gateway
+    engine: generic-openai
+    base_url: https://gw.internal
+    endpoint: chat_completions        # scoring 서피스 강제 지정(모델 수준
+                                      # `models[].endpoint`이 이것보다 우선)
+    paths:                            # 커스텀 URL 레이아웃
+      chat_completions: /api/v2/chat
+      completions: /api/v2/completions
+      tokenize: /api/v2/tokenize
+    query_params:                     # detailed=true 같은 플래그가 모든
+      detailed: "true"                # 업스트림 URL에 붙는다
+    headers:                          # 추가 요청 헤더(X-Api-Key,
+      X-Api-Key: ${GW_TOKEN}          # HTTP-Referer, X-Title, ...)
+    extra_params: {some_flag: 1}      # 추가 JSON 바디 필드
+```
+
+업스트림 **응답** 헤더 중 화이트리스트된 것 — 비용/청구(`x-cost*`,
+`x-usage*`, `x-billed*`), 레이트 리밋(`x-ratelimit*`, `retry-after`,
+`x-remaining*`, `x-quota*`), `x-request-id` — 는 성공한 시도에서 캡처해
+클라이언트에게 `x-jev-upstream-<이름>`로 통과시킨다. 그 외 헤더는
+프로바이더 내부에 머문다.
+
 ## 멀티 백엔드 설정
 
 - `providers[].base_urls` — 한 엔진의 엔드포인트 풀: 요청은 레플리카 간

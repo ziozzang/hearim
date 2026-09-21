@@ -73,7 +73,7 @@ func (a *OllamaAdapter) Tokenize(ctx context.Context, model, text string) ([]int
 	var out struct {
 		Tokens []int `json:"tokens"`
 	}
-	if err := a.hc.do(ctx, "POST", "/api/tokenize", map[string]any{"model": model, "content": text}, &out); err == nil && len(out.Tokens) > 0 {
+	if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathTokenize), map[string]any{"model": model, "content": text}, &out); err == nil && len(out.Tokens) > 0 {
 		return out.Tokens, nil
 	}
 	return nil, fmt.Errorf("provider: ollama %s: no tokenizer endpoint (probe-only)", a.cfg.ID)
@@ -81,7 +81,7 @@ func (a *OllamaAdapter) Tokenize(ctx context.Context, model, text string) ([]int
 
 func (a *OllamaAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
 	// Chat is the verified logprob surface; raw completions returns none.
-	return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model))
+	return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
 }
 
 // ScoreContinuations: the OpenAI-compatible surface exposes no prompt-token
@@ -94,7 +94,7 @@ func (a *OllamaAdapter) Health(ctx context.Context) (Health, error) {
 	var out struct {
 		Version string `json:"version"`
 	}
-	if err := a.hc.do(ctx, "GET", "/api/version", nil, &out); err != nil {
+	if err := a.hc.do(ctx, "GET", pathFor(a.cfg, PathHealth), nil, &out); err != nil {
 		return Health{OK: false, Detail: err.Error()}, err
 	}
 	a.caps.EngineVersion = out.Version
@@ -152,7 +152,12 @@ func (a *GenericAdapter) Tokenize(ctx context.Context, model, text string) ([]in
 }
 
 func (a *GenericAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
-	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "", ModelExtras(a.cfg, req.Model.Model))
+	// Endpoint forcing applies: a gateway pinned to chat_completions is
+	// scored through the chat surface even on the generic engine.
+	if req.Endpoint == config.EndpointChatCompletion {
+		return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
+	}
+	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "", ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
 }
 
 func (a *GenericAdapter) ScoreContinuations(ctx context.Context, req ContinuationScoreRequest) (*ContinuationScoreResult, error) {
@@ -160,7 +165,7 @@ func (a *GenericAdapter) ScoreContinuations(ctx context.Context, req Continuatio
 }
 
 func (a *GenericAdapter) Health(ctx context.Context) (Health, error) {
-	if err := a.hc.do(ctx, "GET", "/models", nil, nil); err != nil {
+	if err := a.hc.do(ctx, "GET", pathFor(a.cfg, PathHealth), nil, nil); err != nil {
 		return Health{OK: false, Detail: err.Error()}, err
 	}
 	return Health{OK: true}, nil

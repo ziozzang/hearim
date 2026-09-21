@@ -245,6 +245,34 @@ A request's `model` field resolves in this order:
    that serves it; ambiguous names hosted by several providers are an
    explicit error
 
+### Arbitrary providers: surfaces, paths, params, headers
+
+Together the per-provider knobs make any OpenAI-shaped gateway attachable:
+
+```yaml
+providers:
+  - id: my-gateway
+    engine: generic-openai
+    base_url: https://gw.internal
+    endpoint: chat_completions        # force the scoring surface (model-level
+                                      # `models[].endpoint` wins over this)
+    paths:                            # custom URL layout
+      chat_completions: /api/v2/chat
+      completions: /api/v2/completions
+      tokenize: /api/v2/tokenize
+    query_params:                     # flags like detailed=true ride on
+      detailed: "true"                # every upstream URL
+    headers:                          # extra request headers (X-Api-Key,
+      X-Api-Key: ${GW_TOKEN}          # HTTP-Referer, X-Title, ...)
+    extra_params: {some_flag: 1}      # extra JSON body fields
+```
+
+Whitelisted upstream **response** headers — cost/billing (`x-cost*`,
+`x-usage*`, `x-billed*`), rate limits (`x-ratelimit*`, `retry-after`,
+`x-remaining*`, `x-quota*`), and `x-request-id` — are captured from the
+winning attempt and passed through to clients as
+`x-jev-upstream-<name>`; anything else stays internal to the provider.
+
 ### Multi-backend configuration
 
 - `providers[].base_urls` — an endpoint pool for one engine: requests
