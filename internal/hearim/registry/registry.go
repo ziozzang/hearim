@@ -33,6 +33,7 @@ type LabelEntry struct {
 
 // Registry is the §6.3 record for one backend model + endpoint + template.
 type Registry struct {
+	ScoringProfile       string                  `json:"scoring_profile,omitempty"`
 	BackendModel         string                  `json:"backend_model"`
 	ModelDigest          string                  `json:"model_digest,omitempty"`
 	TokenizerRevision    string                  `json:"tokenizer_revision"`
@@ -63,6 +64,7 @@ type Registry struct {
 
 // Options configure a build.
 type Options struct {
+	ScoringProfile    string
 	BackendModel      string
 	ModelDigest       string
 	TokenizerRevision string
@@ -117,6 +119,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		return nil, fmt.Errorf("registry: no label alphabets configured")
 	}
 	reg := &Registry{
+		ScoringProfile:    opts.ScoringProfile,
 		BackendModel:      opts.BackendModel,
 		ModelDigest:       opts.ModelDigest,
 		TokenizerRevision: opts.TokenizerRevision,
@@ -129,7 +132,7 @@ func Build(ctx context.Context, adpt provider.Adapter, opts Options) (*Registry,
 		BoundaryPolicy:    "probe-only",
 		BuiltAt:           time.Now().UTC().Format(time.RFC3339),
 	}
-	caps := adpt.Capabilities()
+	caps := provider.CapabilitiesForRoute(adpt, opts.BackendModel, config.EndpointKind(opts.Endpoint))
 	reg.MaxExactCandidates = maxExactCandidates(caps)
 
 	if len(opts.DelimiterCandidates) == 0 {
@@ -284,21 +287,22 @@ func registryLabels(r *Registry) []string {
 // up cannot be scored: partial recovery is recorded, TopN stays 0.
 func (r *Registry) sweepTopN(ctx context.Context, adpt provider.Adapter, opts Options) {
 	ids, texts, _ := r.Bind(registryLabels(r))
-	caps := adpt.Capabilities()
+	caps := provider.CapabilitiesForModel(adpt, opts.BackendModel)
 	for _, n := range topNLadder {
 		if caps.MaxTopLogprobs > 0 && n > caps.MaxTopLogprobs*8 {
 			break
 		}
 		res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
-			Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
-			Endpoint:            endpointKind(r.Endpoint),
-			PromptText:          opts.PromptBase + opts.UserSuffix + opts.CloseTag + r.Delimiter,
-			CandidateTokenIDs:   ids,
-			CandidateTokenTexts: texts,
-			TopK:                n,
-			NoReasoning:         opts.NoReasoning,
-			ReasoningField:      opts.ReasoningField,
-			ReasoningValue:      opts.ReasoningValue,
+			Model:                   provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
+			Endpoint:                endpointKind(r.Endpoint),
+			PromptText:              opts.PromptBase + opts.UserSuffix + opts.CloseTag + r.Delimiter,
+			CandidateTokenIDs:       ids,
+			CandidateTokenTexts:     texts,
+			TopK:                    n,
+			DisableSelectedTokenIDs: true,
+			NoReasoning:             opts.NoReasoning,
+			ReasoningField:          opts.ReasoningField,
+			ReasoningValue:          opts.ReasoningValue,
 		})
 		if err != nil {
 			// A rejected N reveals the server cap (parse "between 0 and X"
@@ -391,7 +395,7 @@ func (r *Registry) runCompletionProbe(ctx context.Context, adpt provider.Adapter
 	// engine default outright).
 	topK := r.TopN
 	if topK <= 0 {
-		topK = adpt.Capabilities().MaxTopLogprobs
+		topK = provider.CapabilitiesForModel(adpt, opts.BackendModel).MaxTopLogprobs
 	}
 	res, err := adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
 		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
@@ -419,6 +423,19 @@ func (r *Registry) runCompletionProbe(ctx context.Context, adpt provider.Adapter
 			})
 		}
 	}
+	// A server may reject selected-ID fields while exposing usable top-k
+	// logprobs. Match evaluation's fallback instead of leaving that route
+	// permanently unready after the top-N sweep has already succeeded.
+	if (err != nil || !res.AllCandidatesPresent) && provider.CapabilitiesForRoute(adpt, opts.BackendModel, endpointKind(r.Endpoint)).SupportsSelectedTokenIDs() {
+		res, err = adpt.ScoreNextToken(ctx, provider.NextTokenScoreRequest{
+			Model:             provider.ModelIdentity{Provider: adpt.ID(), Model: opts.BackendModel, Digest: opts.ModelDigest},
+			Endpoint:          endpointKind(r.Endpoint),
+			PromptText:        opts.PromptBase + opts.UserSuffix + opts.CloseTag + r.Delimiter,
+			CandidateTokenIDs: ids, CandidateTokenTexts: texts,
+			TopK: topK, DisableSelectedTokenIDs: true,
+			NoReasoning: opts.NoReasoning, ReasoningField: opts.ReasoningField, ReasoningValue: opts.ReasoningValue,
+		})
+	}
 	if err != nil {
 		r.ProbeErr = err.Error()
 		return
@@ -441,7 +458,7 @@ func endpointKind(s string) config.EndpointKind {
 
 func maxExactCandidates(caps provider.ProviderCapabilities) int {
 	if caps.SupportsSelectedTokenIDs() && caps.MaxSelectedTokenIDs > 0 {
-		return caps.MaxSelectedTokenIDs
+		return max(caps.MaxSelectedTokenIDs, caps.MaxTopLogprobs)
 	}
 	if caps.MaxTopLogprobs > 0 {
 		return caps.MaxTopLogprobs
@@ -516,6 +533,7 @@ func (r *Registry) Ready(requiredCandidates int) (bool, []string) {
 // building, so callers can check for a cached registry first.
 func OptionsKey(opts Options) string {
 	r := &Registry{
+		ScoringProfile:    opts.ScoringProfile,
 		BackendModel:      opts.BackendModel,
 		ModelDigest:       opts.ModelDigest,
 		TokenizerRevision: opts.TokenizerRevision,
@@ -550,6 +568,10 @@ func (r *Registry) Key() string {
 	h.Write([]byte(r.UserSuffix))
 	h.Write([]byte{0})
 	h.Write([]byte(r.Delimiter))
+	if r.ScoringProfile != "" {
+		h.Write([]byte{0})
+		h.Write([]byte(r.ScoringProfile))
+	}
 	return hex.EncodeToString(h.Sum(nil))[:24]
 }
 

@@ -291,7 +291,7 @@ func TestScoreAndNoulReduction(t *testing.T) {
 
 func TestStrictFailsWhenCandidatesMissing(t *testing.T) {
 	cfg := testConfig(t)
-	fake := &evalFake{logprobs: []float64{-1, -2, -3, -4}, partialAt: 2, recoverAll: false}
+	fake := &evalFake{logprobs: []float64{-1, -2, -3, -4}, partialAt: 2, recoverAll: false, noTF: true}
 	route := buildRoute(t, fake, cfg)
 	ev := New(compile.New(cfg.Compiler), cfg)
 	plan, _ := ev.Compiler.Compile(mustParse(t, `{
@@ -312,6 +312,28 @@ func TestStrictFailsWhenCandidatesMissing(t *testing.T) {
 	// The teacher-forced fallback must have been attempted.
 	if fake.calls < 2 {
 		t.Errorf("expected retry attempts, calls = %d", fake.calls)
+	}
+}
+
+func TestIncompleteTopKContinuesToTeacherForced(t *testing.T) {
+	cfg := testConfig(t)
+	fake := &evalFake{partialAt: 2, logprobs: []float64{-1, -2, -3, -4}}
+	route := buildRoute(t, fake, cfg)
+	fake.calls = 0
+	ev := New(compile.New(cfg.Compiler), cfg)
+	plan, err := ev.Compiler.Compile(mustParse(t, `{"model":"m","state":"s","questions":{"q":{"type":"choice","criteria":{"a":null,"b":null,"c":null,"d":null}}}}`), "gemma4:31b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ev.EvaluateQuestion(context.Background(), plan, 0, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ScoringMethod != "teacher-forced-label" || fake.tfCalls == 0 {
+		t.Fatalf("partial top-k stopped fallback: %+v", res)
+	}
+	if fake.lastReq == nil || !fake.lastReq.DisableSelectedTokenIDs {
+		t.Fatal("top-k retry must suppress selected-ID request")
 	}
 }
 

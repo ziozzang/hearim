@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"hearim/internal/hearim/compile"
 	"hearim/internal/hearim/config"
@@ -109,6 +110,20 @@ func firstNonEmpty(ss ...string) string {
 }
 
 func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	var err error
+	req, err = prepareScoring(a.cfg, req)
+	if err != nil {
+		return nil, err
+	}
+	if req.Endpoint == config.EndpointChatCompletion || req.Endpoint == config.EndpointCompletions {
+		if req.ConstrainToCandidates {
+			return nil, fmt.Errorf("provider: llama.cpp grammar scoring requires native_generate")
+		}
+		if req.Endpoint == config.EndpointChatCompletion {
+			return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
+		}
+		return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "", ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
+	}
 	if req.WaitClose {
 		return nil, fmt.Errorf("provider: llama.cpp: thinking.wait_close unsupported; use thinking.close_tag preload")
 	}
@@ -123,21 +138,26 @@ func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScore
 	method := "top-k"
 	space := SpaceRaw
 	body := map[string]any{
-		"prompt":        prompt,
-		"n_predict":     1,
-		"temperature":   tempOrOne(req.Temperature),
-		"top_p":         topPOrOne(req.TopP),
-		"top_k":         0,
-		"n_probs":       k,
-		"min_keep":      k,
-		"return_tokens": true,
-		"cache_prompt":  cachePromptOn(a.cfg),
-		"stream":        false,
+		"prompt":              prompt,
+		"n_predict":           1,
+		"temperature":         tempOrOne(req.Temperature),
+		"top_p":               topPOrOne(req.TopP),
+		"top_k":               0,
+		"n_probs":             k,
+		"min_keep":            k,
+		"return_tokens":       true,
+		"cache_prompt":        cachePromptOn(a.cfg),
+		"stream":              false,
+		"post_sampling_probs": false,
 	}
 	if req.ConstrainToCandidates && len(req.CandidateTokenTexts) > 0 {
-		// Grammar restricted to the label set: first token must be one of the
-		// candidate labels. Post-sampling distribution is post-mask (§3.7).
+		// Request the actual post-sampling probabilities; grammar alone
+		// restricts generation without changing reported raw logprobs.
 		body["grammar"] = labelGrammar(req.CandidateTokenTexts)
+		body["post_sampling_probs"] = true
+		// Avoid truncating the candidate distribution with default min-p etc.
+		body["samplers"] = []string{"temperature"}
+		body["temperature"] = 1.0
 		method = "constrained-vocab"
 		space = SpacePostMask
 	}
@@ -145,10 +165,13 @@ func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScore
 
 	var out struct {
 		CompletionProbabilities []struct {
-			ID          int               `json:"id"`
+			ID          *int              `json:"id"`
 			Content     string            `json:"content"`
-			Prob        float64           `json:"prob"`
+			Token       string            `json:"token"`
+			Prob        *float64          `json:"prob"`
+			Logprob     *float64          `json:"logprob"`
 			TopLogprobs []llamaTopLogprob `json:"top_logprobs"`
+			TopProbs    []llamaTopLogprob `json:"top_probs"`
 		} `json:"completion_probabilities"`
 		TokensCached    int `json:"tokens_cached"`
 		TokensEvaluated int `json:"tokens_evaluated"`
@@ -161,12 +184,24 @@ func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScore
 		return nil, fmt.Errorf("provider: llama.cpp: no completion_probabilities")
 	}
 	entries := make([]openaiLogprobEntry, 0, len(out.CompletionProbabilities[0].TopLogprobs))
-	for _, e := range out.CompletionProbabilities[0].TopLogprobs {
+	position := out.CompletionProbabilities[0]
+	top := position.TopLogprobs
+	if req.ConstrainToCandidates {
+		if position.TopProbs == nil {
+			return nil, fmt.Errorf("provider: llama.cpp did not return requested post-sampling top_probs")
+		}
+		top = position.TopProbs
+	}
+	for _, e := range top {
+		if e.Prob == nil && e.Logprob == nil {
+			return nil, fmt.Errorf("provider: llama.cpp missing candidate probability")
+		}
 		entries = append(entries, e.toOpenAI())
 	}
 	// The sampled token itself counts as an entry if not in top_logprobs.
-	sampled := out.CompletionProbabilities[0].ID
-	if sampled != 0 {
+	sampled := -1
+	if position.ID != nil && (position.Logprob != nil || position.Prob != nil) {
+		sampled = *position.ID
 		present := false
 		for _, e := range entries {
 			if e.TokenID != nil && int(*e.TokenID) == sampled {
@@ -174,7 +209,13 @@ func (a *LlamaCppAdapter) ScoreNextToken(ctx context.Context, req NextTokenScore
 			}
 		}
 		if !present {
-			e := openaiLogprobEntry{Token: out.CompletionProbabilities[0].Content, Logprob: logSafe(out.CompletionProbabilities[0].Prob), TokenID: int64ptr(int64(sampled))}
+			lp := 0.0
+			if position.Logprob != nil {
+				lp = *position.Logprob
+			} else {
+				lp = logSafe(*position.Prob)
+			}
+			e := openaiLogprobEntry{Token: firstNonEmpty(position.Token, position.Content), Logprob: lp, TokenID: int64ptr(int64(sampled))}
 			entries = append(entries, e)
 		}
 	}
@@ -203,9 +244,8 @@ func cachePromptOn(cfg config.ProviderConfig) bool {
 func labelGrammar(labels []string) string {
 	root := "root ::= "
 	alts := make([]string, 0, len(labels))
-	for i, l := range labels {
-		alts = append(alts, fmt.Sprintf(`"%s"`, l))
-		_ = i
+	for _, l := range labels {
+		alts = append(alts, strconv.Quote(l))
 	}
 	return root + joinAlternatives(alts)
 }

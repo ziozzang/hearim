@@ -92,6 +92,12 @@ type NextTokenScoreRequest struct {
 	CandidateTokenTexts []string
 	// TopK asks for top-N logprobs when selected-token-ids is unavailable.
 	TopK int
+	// DisableSelectedTokenIDs forces a real top-k retry after selected-ID failure.
+	DisableSelectedTokenIDs bool
+	// Resolved internally from engine/provider/model scoring settings.
+	SelectedTokenField string
+	ConstraintMode     string
+	LogprobSpace       string
 	// Sampler parameters are fixed to identity by default (§7.1).
 	Temperature float64
 	TopP        float64
@@ -113,7 +119,7 @@ type NextTokenScoreRequest struct {
 	// MaxOutputTokens bounds WaitClose generation (0 = adapter default).
 	MaxOutputTokens int
 	// ConstrainToCandidates applies a vocab restriction when supported;
-	// the result is then marked post-mask (§7.3 step 5).
+	// returned probability space depends on the server's logprob mode.
 	ConstrainToCandidates bool
 	// Retry marks an internal retry; adapters may widen parameters.
 	Retry int

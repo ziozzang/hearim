@@ -87,6 +87,12 @@ providers:
 
   - id: vllm-local
     engine: vllm
+    # Engine defaults; override only for the deployed server/version.
+    scoring:
+      selected_token_ids: true
+      max_selected_token_ids: 128
+      constraint: allowed_token_ids
+      logprob_space: raw       # default vLLM raw_logprobs, even with a mask
     # base_urls: an endpoint pool — round-robin with retry failover
     # base_urls: ["http://vllm-a:8000", "http://vllm-b:8000"]
     base_url: http://vllm:8000
@@ -95,12 +101,19 @@ providers:
       - name: llava-1.6-34b
         type: vision            # VLM: state image/images become image_url parts
         extra_params: {max_model_len: 16384}
+        # Example for a route that rejects these fields (not a claim about llava):
+        # scoring:
+        #   selected_token_ids: false
+        #   prompt_token_logprobs: false
+        #   constraint: none
     endpoint_preference: [completions, chat_completions]
     selected_token_field: logprob_token_ids
     prefix_caching: automatic
 
   - id: sglang-local
     engine: sglang
+    scoring:
+      constraint: none        # native SGLang has no allowed_token_ids field
     base_url: http://sglang:30000
     endpoint_preference: [native_generate, completions, chat_completions]
     selected_token_field: token_ids_logprob

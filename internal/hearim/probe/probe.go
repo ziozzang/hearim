@@ -147,7 +147,7 @@ func probeThinkingControl(ctx context.Context, adpt provider.Adapter, model stri
 	cfg config.CompilerConfig, check func(string, bool, string)) (verified bool, tagsEmitted bool) {
 
 	ids, texts, _ := reg.Bind(registryLabels(reg))
-	caps := adpt.Capabilities()
+	caps := provider.CapabilitiesForModel(adpt, model)
 	req := provider.NextTokenScoreRequest{
 		Model:               provider.ModelIdentity{Provider: adpt.ID(), Model: model},
 		Endpoint:            endpoint,
@@ -272,7 +272,7 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	rep.Summary.TokenizerEndpoint = tokErr == nil
 	check("tokenizer_endpoint", tokErr == nil, errString(tokErr))
 
-	caps := adpt.Capabilities()
+	caps := provider.CapabilitiesForModel(adpt, model)
 
 	// Resolve the exact route first so the registry records the endpoint
 	// actually used for scoring (§3.4).
@@ -285,6 +285,7 @@ func Run(ctx context.Context, adpt provider.Adapter, model string, cfg config.Co
 	// The production reasoning control applies: think-off measurements and
 	// think-on traffic would disagree on N and label boundaries.
 	regOpts := registry.Options{
+		ScoringProfile:      provider.ScoringProfileKey(adpt, model),
 		BackendModel:        model,
 		TokenizerRevision:   caps.EngineVersion,
 		Endpoint:            string(endpoint),
@@ -435,7 +436,7 @@ func checkParity(ctx context.Context, adpt provider.Adapter, model, prompt strin
 func probeChat(ctx context.Context, adpt provider.Adapter, model, prompt string, reg *registry.Registry, cfg config.CompilerConfig) (bool, string) {
 	// Chat probe: same content through chat rendering; informational only
 	// because chat routes additionally need verified no-reasoning (§3.4).
-	caps := adpt.Capabilities()
+	caps := provider.CapabilitiesForModel(adpt, model)
 	hasChat := false
 	for _, e := range caps.Endpoints {
 		if e.Kind == config.EndpointChatCompletion {

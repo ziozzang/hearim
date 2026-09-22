@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"hearim/internal/hearim/compile"
 	"hearim/internal/hearim/config"
@@ -79,6 +80,20 @@ func (a *SGLangAdapter) Tokenize(ctx context.Context, model, text string) ([]int
 // ScoreNextToken calls /generate with token_ids_logprob for direct candidate
 // ID scoring (TODO.md §3.9 request shape).
 func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	var err error
+	req, err = prepareScoring(a.cfg, req)
+	if err != nil {
+		return nil, err
+	}
+	if req.Endpoint == config.EndpointChatCompletion {
+		// The OpenAI surface is top-k only here; native selected-ID fields
+		// are not assumed to be portable across SGLang endpoint versions.
+		req.SelectedTokenField = ""
+		return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
+	}
+	if req.Endpoint == config.EndpointCompletions {
+		return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "", ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
+	}
 	if req.WaitClose {
 		return nil, fmt.Errorf("provider: sglang: thinking.wait_close unsupported; use thinking.close_tag preload")
 	}
@@ -93,9 +108,10 @@ func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRe
 			"top_p":          topPOrOne(req.TopP),
 			"top_k":          -1,
 		},
-		"return_logprob":   true,
-		"top_logprobs_num": 0,
-		"stream":           false,
+		"return_logprob":          true,
+		"return_text_in_logprobs": !validCandidateIDs(req),
+		"top_logprobs_num":        0,
+		"stream":                  false,
 	}
 	if ids, ok := input.([]int); ok {
 		body["input_ids"] = ids
@@ -107,24 +123,13 @@ func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRe
 	}
 	method := "top-k"
 	space := SpaceRaw
-	idsUsable := len(req.CandidateTokenIDs) > 0
-	for _, id := range req.CandidateTokenIDs {
-		if id < 0 {
-			idsUsable = false
-			break
-		}
-	}
-	if idsUsable {
+	if req.SelectedTokenField != "" {
 		body["token_ids_logprob"] = req.CandidateTokenIDs
 		method = "selected-token-ids"
-		if req.ConstrainToCandidates {
-			// Restrict sampling to the candidate set via allowed_token_ids.
-			body["sampling_params"].(map[string]any)["allowed_token_ids"] = req.CandidateTokenIDs
-			space = SpacePostMask
-			method = "constrained-vocab"
-		}
 	} else if req.TopK > 0 {
 		body["top_logprobs_num"] = req.TopK
+	} else {
+		body["top_logprobs_num"] = a.caps.MaxTopLogprobs
 	}
 	MergeExtras(body, ModelExtras(a.cfg, req.Model.Model))
 
@@ -135,53 +140,96 @@ func (a *SGLangAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRe
 	return parseSGLangScore(raw, req.CandidateTokenIDs, req.CandidateTokenTexts, method, space)
 }
 
-// parseSGLangScore handles the /generate response with flexible field names
-// across SGLang versions: logprobs.output_token_ids_logprobs (per-position
-// candidate lists) or output_top_logprobs (entries with token ids).
-func parseSGLangScore(raw json.RawMessage, ids []int, texts []string, method, space string) (*NextTokenScoreResult, error) {
-	var resp struct {
-		LogProbs *struct {
-			OutputTokenIDsLogprobs [][]json.RawMessage `json:"output_token_ids_logprobs"`
-			OutputTopLogprobs      [][]json.RawMessage `json:"output_top_logprobs"`
-			OutputTokenLogprobs    []float64           `json:"output_token_logprobs"`
-		} `json:"logprobs"`
-		MetaInfo *struct {
-			PromptTokens     int    `json:"prompt_tokens"`
-			CachedTokens     int    `json:"cached_tokens"`
-			CompletionTokens int    `json:"completion_tokens"`
-			ReqID            string `json:"req_id"`
-		} `json:"meta_info"`
+// Native /generate returns (logprob, token_id, text-or-null) tuples under
+// meta_info. Retain the object envelope for older gateway integrations.
+type sglangLogprobs struct {
+	OutputTokenIDsLogprobs [][]json.RawMessage `json:"output_token_ids_logprobs"`
+	OutputTopLogprobs      [][]json.RawMessage `json:"output_top_logprobs"`
+	InputTokenLogprobs     []json.RawMessage   `json:"input_token_logprobs"`
+}
+
+type sglangResponse struct {
+	Text     string          `json:"text"`
+	LogProbs *sglangLogprobs `json:"logprobs"`
+	MetaInfo struct {
+		sglangLogprobs
+		PromptTokens int    `json:"prompt_tokens"`
+		CachedTokens int    `json:"cached_tokens"`
+		ID           string `json:"id"`
+		ReqID        string `json:"req_id"`
+	} `json:"meta_info"`
+}
+
+func (r *sglangResponse) logprobs() *sglangLogprobs {
+	if r.MetaInfo.OutputTokenIDsLogprobs != nil || r.MetaInfo.OutputTopLogprobs != nil || r.MetaInfo.InputTokenLogprobs != nil {
+		return &r.MetaInfo.sglangLogprobs
 	}
+	return r.LogProbs
+}
+
+func parseSGLangEntry(raw json.RawMessage) (openaiLogprobEntry, error) {
+	var tuple []json.RawMessage
+	if json.Unmarshal(raw, &tuple) == nil && len(tuple) >= 2 {
+		var lp *float64
+		var id *int64
+		if err := json.Unmarshal(tuple[0], &lp); err != nil {
+			return openaiLogprobEntry{}, err
+		}
+		if err := json.Unmarshal(tuple[1], &id); err != nil {
+			return openaiLogprobEntry{}, err
+		}
+		if lp == nil || id == nil || *id < 0 || math.IsNaN(*lp) || math.IsInf(*lp, 0) {
+			return openaiLogprobEntry{}, fmt.Errorf("provider: invalid SGLang logprob tuple")
+		}
+		e := openaiLogprobEntry{Logprob: *lp, TokenID: id}
+		if len(tuple) > 2 && string(tuple[2]) != "null" {
+			if err := json.Unmarshal(tuple[2], &e.Token); err != nil {
+				return e, err
+			}
+		}
+		return e, nil
+	}
+	var e openaiLogprobEntry
+	var fields struct {
+		Logprob *float64 `json:"logprob"`
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return e, err
+	}
+	if fields.Logprob == nil {
+		return e, fmt.Errorf("provider: missing SGLang logprob")
+	}
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return e, err
+	}
+	return e, nil
+}
+
+func parseSGLangScore(raw json.RawMessage, ids []int, texts []string, method, space string) (*NextTokenScoreResult, error) {
+	var resp sglangResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("provider: sglang decode: %w", err)
 	}
-	if resp.LogProbs == nil {
+	lps := resp.logprobs()
+	if lps == nil {
 		return nil, fmt.Errorf("provider: sglang: no logprobs in response")
 	}
 
 	// Prefer candidate-ID entries at the first decode position.
 	var entries []openaiLogprobEntry
-	if len(resp.LogProbs.OutputTokenIDsLogprobs) > 0 {
-		pos := resp.LogProbs.OutputTokenIDsLogprobs[0]
-		for _, el := range pos {
-			var arr []openaiLogprobEntry
-			if err := json.Unmarshal(el, &arr); err == nil {
-				entries = append(entries, arr...)
-				continue
-			}
-			var one openaiLogprobEntry
-			if err := json.Unmarshal(el, &one); err == nil {
-				entries = append(entries, one)
-			}
-		}
+	var pos []json.RawMessage
+	if len(lps.OutputTokenIDsLogprobs) > 0 {
+		pos = lps.OutputTokenIDsLogprobs[0]
 	}
-	if len(entries) == 0 && len(resp.LogProbs.OutputTopLogprobs) > 0 {
-		for _, el := range resp.LogProbs.OutputTopLogprobs[0] {
-			var one openaiLogprobEntry
-			if err := json.Unmarshal(el, &one); err == nil {
-				entries = append(entries, one)
-			}
+	if len(pos) == 0 && len(lps.OutputTopLogprobs) > 0 {
+		pos = lps.OutputTopLogprobs[0]
+	}
+	for _, el := range pos {
+		one, err := parseSGLangEntry(el)
+		if err != nil {
+			return nil, fmt.Errorf("provider: SGLang logprob entry: %w", err)
 		}
+		entries = append(entries, one)
 	}
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("provider: sglang: no usable logprob entries")
@@ -194,11 +242,10 @@ func parseSGLangScore(raw json.RawMessage, ids []int, texts []string, method, sp
 		ScoringMethod:        method,
 		ProbabilitySpace:     space,
 	}
-	if resp.MetaInfo != nil {
-		res.PromptTokens = resp.MetaInfo.PromptTokens
-		res.CachedPromptTokens = resp.MetaInfo.CachedTokens
-		res.BackendRequestID = resp.MetaInfo.ReqID
-	}
+	res.PromptTokens = resp.MetaInfo.PromptTokens
+	res.CachedPromptTokens = resp.MetaInfo.CachedTokens
+	res.BackendRequestID = firstNonEmpty(resp.MetaInfo.ID, resp.MetaInfo.ReqID)
+	res.GeneratedText = resp.Text
 	return res, nil
 }
 
@@ -206,6 +253,12 @@ func parseSGLangScore(raw json.RawMessage, ids []int, texts []string, method, sp
 // logprobs (TODO.md §15: SGLang's select pattern — prefill the common prompt,
 // then score suffixes).
 func (a *SGLangAdapter) ScoreContinuations(ctx context.Context, req ContinuationScoreRequest) (*ContinuationScoreResult, error) {
+	if !resolveScoring(a.cfg, req.Model.Model).promptLogprobs {
+		return nil, fmt.Errorf("provider: prompt token logprobs disabled for %s", req.Model.Model)
+	}
+	if req.Endpoint == config.EndpointChatCompletion || req.Endpoint == config.EndpointCompletions {
+		return nil, fmt.Errorf("provider: SGLang continuation scoring requires native_generate")
+	}
 	prefixIDs := req.PrefixTokenIDs
 	var err error
 	if len(prefixIDs) == 0 {
@@ -234,37 +287,33 @@ func (a *SGLangAdapter) ScoreContinuations(ctx context.Context, req Continuation
 		if err := a.hc.do(ctx, "POST", pathFor(a.cfg, PathGenerate), body, &raw); err != nil {
 			return ContinuationScore{}, err
 		}
-		var resp struct {
-			LogProbs *struct {
-				InputTokenLogprobs []json.RawMessage `json:"input_token_logprobs"`
-			} `json:"logprobs"`
-		}
+		var resp sglangResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return ContinuationScore{}, err
 		}
-		if resp.LogProbs == nil {
+		lps := resp.logprobs()
+		if lps == nil || len(lps.InputTokenLogprobs) != len(ids) || start >= len(ids) {
 			return ContinuationScore{}, fmt.Errorf("provider: sglang: no input logprobs")
 		}
 		var sum float64
 		n := 0
-		for i := start; i < len(resp.LogProbs.InputTokenLogprobs); i++ {
-			el := resp.LogProbs.InputTokenLogprobs[i]
-			if len(el) == 0 || string(el) == "null" {
+		for i := start; i < len(lps.InputTokenLogprobs); i++ {
+			// The first prompt position has no conditional logprob (BOS).
+			if i == 0 {
 				continue
 			}
-			var f float64
-			if err := json.Unmarshal(el, &f); err == nil {
-				sum += f
-				n++
-				continue
+			e, err := parseSGLangEntry(lps.InputTokenLogprobs[i])
+			if err != nil {
+				return ContinuationScore{}, err
 			}
-			var s struct {
-				Logprob float64 `json:"logprob"`
+			if e.TokenID != nil && int(*e.TokenID) != ids[i] {
+				return ContinuationScore{}, fmt.Errorf("provider: SGLang prompt token ID mismatch at %d", i)
 			}
-			if err := json.Unmarshal(el, &s); err == nil && s.Logprob != 0 {
-				sum += s.Logprob
-				n++
-			}
+			sum += e.Logprob
+			n++
+		}
+		if n == 0 {
+			return ContinuationScore{}, fmt.Errorf("provider: no scored continuation tokens")
 		}
 		return ContinuationScore{LogProb: sum, TokenLen: n, HealedFrom: start}, nil
 	}

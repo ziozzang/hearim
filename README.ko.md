@@ -80,6 +80,14 @@ Jev와 회선(wire) 호환일 뿐 TypeSafe 모델과 수치 동일성을 보장�
 
 ### scoring 전략 체인
 
+추론 엔진 기본값은 provider·모델별 [`scoring` 설정](docs/PROVIDER-SCORING.md)으로
+덮어쓸 수 있다. 지원하지 않는 `allowed_token_ids`나 selected-ID 요청을 끌 수
+있으며, 확인한 소스 버전과 제약은 [소스 검토 노트](docs/PROVIDER-SOURCE-REVIEW.md)에 기록했다.
+
+추론 서버 접근 없이 개발할 때는 [CPU-only mock 시나리오](docs/MOCK-INFERENCE.md)로
+세 엔진의 HTTP 형식·옵션 거부/무시·fallback을 검증할 수 있다.
+`go test -v ./internal/mockinfer` 또는 `go run ./cmd/hearim-mock`으로 실행한다.
+
 질문별로 어댑터는 다음 순서로 시도한다 (TODO.md §3.11 / §7.3):
 
 1. **selected-token-ids** — 후보 token ID의 logprob 직접 요청
@@ -91,8 +99,9 @@ Jev와 회선(wire) 호환일 뿐 TypeSafe 모델과 수치 동일성을 보장�
    확장한다
 3. **teacher-forced-label** — 라벨 토큰의 input-token logprob
    (안정 라벨에서는 next-token logprob와 일치해야 한다)
-4. **constrained-vocab** — grammar / `allowed_token_ids` 마스크. 결과는
-   `x-jev-probability-space: post-mask`로 표시된다
+4. **constrained-vocab** — 설정상 지원되는 grammar / `allowed_token_ids` 마스크.
+   `x-jev-probability-space`는 반환된 확률 공간을 표시한다(vLLM 기본값은 마스크가
+   있어도 raw, llama.cpp grammar 경로는 post-mask를 명시적으로 요청)
 5. **choice-text continuation** — 선택지 문자열 전체 채점.
    `sum` / `token-mean` / `pmi` 정규화와 모드별 calibration 온도 τ 적용
 

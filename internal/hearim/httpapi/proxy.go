@@ -114,7 +114,7 @@ func (s *Server) tryJevCandidates(w http.ResponseWriter, r *http.Request, route 
 		labels = append(labels, l)
 		values = append(values, probe.JevCandidates[l])
 	}
-	caps := route.Adapter.Capabilities()
+	caps := provider.CapabilitiesForModel(route.Adapter, route.BackendModel)
 	res, err := route.Adapter.ScoreNextToken(r.Context(), provider.NextTokenScoreRequest{
 		Model: provider.ModelIdentity{
 			Provider: route.ProviderID,

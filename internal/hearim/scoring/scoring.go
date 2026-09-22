@@ -130,11 +130,13 @@ func WeightedMean(p []float64) float64 {
 // the same model under a different engine, quantization, template, or scoring
 // mode is a different profile (TODO.md §16 point 8).
 type CalibrationProfile struct {
-	Model           string
-	Engine          string
-	TemplateVersion string
-	ScoringMethod   string
-	Tau             float64
+	ProbabilitySpace string
+	ProviderProfile  string
+	Model            string
+	Engine           string
+	TemplateVersion  string
+	ScoringMethod    string
+	Tau              float64
 }
 
 // ID renders the profile identifier reported in x-jev-calibration-profile.
@@ -143,7 +145,14 @@ func (c CalibrationProfile) ID() string {
 	if tau == 0 {
 		tau = 1
 	}
-	return fmt.Sprintf("%s|%s|%s|%s|tau=%g", c.Model, c.Engine, c.TemplateVersion, c.ScoringMethod, tau)
+	id := fmt.Sprintf("%s|%s|%s|%s|tau=%g", c.Model, c.Engine, c.TemplateVersion, c.ScoringMethod, tau)
+	if c.ProbabilitySpace != "" {
+		id += "|space=" + c.ProbabilitySpace
+	}
+	if c.ProviderProfile != "" {
+		id += "|provider-profile=" + c.ProviderProfile
+	}
+	return id
 }
 
 // ContinuationMode selects how a choice-text sequence score is normalized

@@ -147,7 +147,8 @@ func TestVLLMConstrainedSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.ProbabilitySpace != SpacePostMask {
+	// vLLM's default raw_logprobs are captured before the allowlist.
+	if res.ProbabilitySpace != SpaceRaw {
 		t.Errorf("space = %s", res.ProbabilitySpace)
 	}
 	if res.ScoringMethod != "constrained-vocab" {
@@ -173,15 +174,10 @@ func TestSGLangScoreNextTokenTokenIDsLogprob(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"text": "2",
-			"logprobs": map[string]any{
-				"output_token_ids_logprobs": []any{
-					[]any{
-						map[string]any{"token_id": 1001, "logprob": -1.5},
-						map[string]any{"token_id": 1002, "logprob": -0.3},
-					},
-				},
+			"meta_info": map[string]any{
+				"output_token_ids_logprobs": []any{[]any{[]any{-1.5, 1001, nil}, []any{-0.3, 1002, nil}}},
+				"prompt_tokens":             200, "cached_tokens": 150, "id": "r9",
 			},
-			"meta_info": map[string]any{"prompt_tokens": 200, "cached_tokens": 150, "req_id": "r9"},
 		})
 	}))
 	defer srv.Close()
@@ -315,13 +311,16 @@ func TestLlamaCppGrammarConstraint(t *testing.T) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 		gotGrammar, _ = body["grammar"].(string)
+		if body["post_sampling_probs"] != true {
+			t.Error("post-sampling probabilities must be requested")
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"completion_probabilities": []any{
 				map[string]any{
 					"id":      1,
 					"content": "1",
 					"prob":    0.6,
-					"top_logprobs": []any{
+					"top_probs": []any{
 						map[string]any{"id": 1, "content": "1", "prob": 0.6},
 						map[string]any{"id": 2, "content": "0", "prob": 0.4},
 					},

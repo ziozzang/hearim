@@ -7,6 +7,13 @@
 > 다시 실행하라. readiness 게이트가 미검증 route를 자동으로 운전에서
 > 제외한다. 최종 조사: **2026-09-21**.
 
+> **소스 검토 주의(2026-09-22):** 아래 vLLM·SGLang·llama.cpp 항목은 실측이
+> 아니라 예상이다. [소스 수준 검토](docs/PROVIDER-SOURCE-REVIEW.md)에서 현재
+> 어댑터의 요청·응답 형식과 확률 공간 표기 불일치를 확인하고, 파서·fallback과
+> [provider/모델별 scoring 설정](docs/PROVIDER-SCORING.md)을 수정했다.
+> native SGLang은 `sampling_params.allowed_token_ids`를 지원하지 않는다.
+> 소스 형식 기반 회귀 테스트는 통과했으며, 실서버·모델 호환성은 별도 probe로 확인해야 한다.
+
 ## 요약 매트릭스
 
 | 엔진 / 호스트 | logprob 표면 | tokenizer | 비전 | 비고 |

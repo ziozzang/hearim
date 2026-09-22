@@ -23,6 +23,7 @@ var protectedFields = map[string]bool{
 	"return_logprob": true, "top_logprobs_num": true, "logprob_start_len": true,
 	"prompt_logprobs": true, "return_tokens": true, "return_text_in_logprobs": true,
 	"allowed_token_ids": true, "sampling_params": true,
+	"post_sampling_probs": true, "samplers": true,
 	// cache control is engine policy, not per-model tuning
 	"cache_prompt": true,
 }

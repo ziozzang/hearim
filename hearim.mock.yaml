@@ -1,0 +1,27 @@
+# Local protocol smoke test. Start three source-shaped synthetic servers:
+# go run ./cmd/hearim-mock -engine vllm -addr 127.0.0.1:18080
+# go run ./cmd/hearim-mock -engine sglang -addr 127.0.0.1:18081
+# go run ./cmd/hearim-mock -engine llama.cpp -addr 127.0.0.1:18082
+# Then: go run ./cmd/hearim serve -config hearim.mock.yaml -addr 127.0.0.1:18090
+gateway:
+  default_model: mock-vllm
+providers:
+  - id: mock-vllm
+    engine: vllm
+    base_url: http://127.0.0.1:18080
+    endpoint: completions
+    models: [tiny-synthetic]
+  - id: mock-sglang
+    engine: sglang
+    base_url: http://127.0.0.1:18081
+    endpoint: native_generate
+    models: [tiny-synthetic]
+  - id: mock-llama
+    engine: llama.cpp
+    base_url: http://127.0.0.1:18082
+    endpoint: native_generate
+    models: [tiny-synthetic]
+model_aliases:
+  mock-vllm: mock-vllm:tiny-synthetic
+  mock-sglang: mock-sglang:tiny-synthetic
+  mock-llama: mock-llama:tiny-synthetic

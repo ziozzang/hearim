@@ -275,7 +275,10 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 		Extra:       map[string]any{},
 	}
 	method := "top-k"
-	space := SpaceRaw
+	space := req.LogprobSpace
+	if space == "" {
+		space = SpaceRaw
+	}
 	// Direct ID requests are only valid with resolved, non-negative token
 	// IDs — probe-only registries (no tokenizer endpoint) carry -1 and must
 	// fall back to text-matched top-k.
@@ -289,25 +292,22 @@ func scoreViaCompletions(ctx context.Context, hc *httpClient, req NextTokenScore
 	if idsUsable {
 		body.Extra[selectedField] = req.CandidateTokenIDs
 		body.Logprobs = intptr(1) // per vLLM docs logprobs must be set
-		if req.ConstrainToCandidates {
-			body.Extra["allowed_token_ids"] = req.CandidateTokenIDs
-			space = SpacePostMask
-			method = "constrained-vocab"
-		} else {
-			method = "selected-token-ids"
-		}
+		method = "selected-token-ids"
 	} else {
 		k := req.TopK
 		if k <= 0 {
 			k = 20
 		}
 		body.Logprobs = intptr(k)
-		if req.ConstrainToCandidates {
-			// Only send the mask when the server understands the field.
-			body.Extra["allowed_token_ids"] = req.CandidateTokenIDs
-			space = SpacePostMask
-			method = "constrained-vocab"
+	}
+	if req.ConstrainToCandidates {
+		if req.ConstraintMode != "allowed_token_ids" || !validCandidateIDs(req) {
+			return nil, fmt.Errorf("provider: unsupported/unresolved candidate constraint")
 		}
+		body.Extra["allowed_token_ids"] = req.CandidateTokenIDs
+		method = "constrained-vocab"
+		// vLLM defaults to raw logprobs computed BEFORE the sampling mask.
+		// The resolved server profile, not mask presence, determines space.
 	}
 	for k, v := range extras {
 		if !protectedFields[k] {
@@ -446,6 +446,24 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		Stream:      false,
 		Extra:       map[string]any{},
 	}
+	space := req.LogprobSpace
+	if space == "" {
+		space = SpaceRaw
+	}
+	if req.SelectedTokenField != "" {
+		body.Extra[req.SelectedTokenField] = req.CandidateTokenIDs
+		method = "selected-token-ids"
+	}
+	if req.ConstrainToCandidates {
+		if req.ConstraintMode != "allowed_token_ids" || !validCandidateIDs(req) {
+			return nil, fmt.Errorf("provider: unsupported/unresolved candidate constraint")
+		}
+		body.Extra["allowed_token_ids"] = req.CandidateTokenIDs
+		method = "constrained-vocab"
+	}
+	if req.WaitClose {
+		method = "wait-close-tag"
+	}
 	switch {
 	case req.ReasoningField != "":
 		// Model-card-documented control wins (e.g. reasoning_effort: "none").
@@ -504,7 +522,7 @@ func scoreViaChat(ctx context.Context, hc *httpClient, req NextTokenScoreRequest
 		PromptTokens:         out.Usage.PromptTokens,
 		BackendRequestID:     out.ID,
 		ScoringMethod:        method,
-		ProbabilitySpace:     SpaceRaw,
+		ProbabilitySpace:     space,
 	}
 	if out.Usage.PromptTokensDetails != nil {
 		res.CachedPromptTokens = out.Usage.PromptTokensDetails.CachedTokens

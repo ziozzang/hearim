@@ -152,12 +152,17 @@ func (a *GenericAdapter) Tokenize(ctx context.Context, model, text string) ([]in
 }
 
 func (a *GenericAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	var err error
+	req, err = prepareScoring(a.cfg, req)
+	if err != nil {
+		return nil, err
+	}
 	// Endpoint forcing applies: a gateway pinned to chat_completions is
 	// scored through the chat surface even on the generic engine.
 	if req.Endpoint == config.EndpointChatCompletion {
 		return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
 	}
-	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, "", ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
+	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, req.SelectedTokenField, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
 }
 
 func (a *GenericAdapter) ScoreContinuations(ctx context.Context, req ContinuationScoreRequest) (*ContinuationScoreResult, error) {

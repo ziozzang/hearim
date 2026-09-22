@@ -28,7 +28,7 @@ func NewVLLM(cfg config.ProviderConfig) *VLLMAdapter {
 	if selectedField == "" {
 		selectedField = "logprob_token_ids"
 	}
-	maxSelected := 256
+	maxSelected := 128
 	a.caps = ProviderCapabilities{
 		Engine: config.EngineVLLM,
 		Endpoints: []EndpointProfile{
@@ -71,20 +71,24 @@ func (a *VLLMAdapter) Tokenize(ctx context.Context, model, text string) ([]int, 
 }
 
 func (a *VLLMAdapter) ScoreNextToken(ctx context.Context, req NextTokenScoreRequest) (*NextTokenScoreResult, error) {
+	var err error
+	req, err = prepareScoring(a.cfg, req)
+	if err != nil {
+		return nil, err
+	}
 	// Endpoint forcing applies (chat-pinned gateways).
 	if req.Endpoint == config.EndpointChatCompletion {
 		return scoreViaChat(ctx, a.hc, req, req.Model.Model, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathChatCompletions))
 	}
-	field := a.cfg.SelectedTokenField
-	if field == "" {
-		field = "logprob_token_ids"
-	}
-	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, field, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
+	return scoreViaCompletions(ctx, a.hc, req, req.Model.Model, req.SelectedTokenField, ModelExtras(a.cfg, req.Model.Model), pathFor(a.cfg, PathCompletions))
 }
 
 // ScoreContinuations teacher-forces prefix+continuation with prompt_logprobs
 // (TODO.md §3.11 strategy 3/5; vLLM supports input-token logprobs).
 func (a *VLLMAdapter) ScoreContinuations(ctx context.Context, req ContinuationScoreRequest) (*ContinuationScoreResult, error) {
+	if !resolveScoring(a.cfg, req.Model.Model).promptLogprobs {
+		return nil, fmt.Errorf("provider: prompt token logprobs disabled for %s", req.Model.Model)
+	}
 	prefixIDs := req.PrefixTokenIDs
 	var err error
 	if len(prefixIDs) == 0 {

@@ -209,7 +209,7 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 		route.Endpoint = *forced
 		s.Logger.Warn("endpoint force-pinned by configuration; capability resolution skipped",
 			"provider", providerID, "model", model, "endpoint", *forced)
-	} else if e, err := provider.ResolveExactRoute(adpt.Capabilities(), s.Cfg.BackendPolicy); err == nil {
+	} else if e, err := provider.ResolveExactRoute(provider.CapabilitiesForModel(adpt, model), s.Cfg.BackendPolicy); err == nil {
 		route.Endpoint = e.Kind
 	}
 	// §3.4 veto: a model whose reasoning cannot be fully disabled has no
@@ -261,6 +261,7 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 	promptBase := probePlan.Questions[0].PromptPrefix + probePlan.Questions[0].PromptSuffix
 
 	opts := registry.Options{
+		ScoringProfile:      provider.ScoringProfileKey(adpt, model),
 		BackendModel:        model,
 		TokenizerRevision:   tokenizerRevisionOf(adpt),
 		Endpoint:            string(route.Endpoint),

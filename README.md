@@ -85,6 +85,15 @@ identical to TypeSafe's model. Diagnostics ride on response headers
 
 ### Scoring strategy chain
 
+Engine defaults can be overridden per provider and per model through
+[`scoring` settings](docs/PROVIDER-SCORING.md), including disabling unsupported
+`allowed_token_ids` or selected-ID requests. Compatibility findings and source
+revisions are recorded in the [provider audit](docs/PROVIDER-SOURCE-REVIEW.md).
+
+For development without inference hardware, [CPU-only mock scenarios](docs/MOCK-INFERENCE.md)
+exercise all three engines' HTTP shapes, option rejection/ignoring, and fallback
+paths. Run `go test -v ./internal/mockinfer`, or start `go run ./cmd/hearim-mock`.
+
 Per question, adapters try in order (TODO.md §3.11 / §7.3):
 
 1. **selected-token-ids** — direct candidate token-ID logprob request
@@ -97,8 +106,9 @@ Per question, adapters try in order (TODO.md §3.11 / §7.3):
    cap
 3. **teacher-forced-label** — input-token logprob of the label token
    (must agree with the next-token logprob on stable labels)
-4. **constrained-vocab** — grammar / `allowed_token_ids` mask; the result is
-   marked `x-jev-probability-space: post-mask`
+4. **constrained-vocab** — grammar / `allowed_token_ids` mask, where configured;
+   `x-jev-probability-space` reflects returned logprobs (vLLM defaults to raw
+   even with a sampling mask; llama.cpp grammar mode requests post-mask)
 5. **choice-text continuation** — full choice string scoring with
    `sum` / `token-mean` / `pmi` normalization and a per-mode calibration
    temperature τ

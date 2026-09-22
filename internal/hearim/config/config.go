@@ -127,9 +127,10 @@ type ProviderConfig struct {
 	BaseURL string     `yaml:"base_url" json:"base_url"`
 	// BaseURLs is an endpoint pool for the same engine: requests rotate
 	// across hosts and fail over on transport errors and retriable statuses.
-	BaseURLs []string     `yaml:"base_urls" json:"base_urls"`
-	APIKey   string       `yaml:"api_key" json:"api_key"`
-	Models   ModelConfigs `yaml:"models" json:"models"`
+	BaseURLs []string               `yaml:"base_urls" json:"base_urls"`
+	APIKey   string                 `yaml:"api_key" json:"api_key"`
+	Models   ModelConfigs           `yaml:"models" json:"models"`
+	Scoring  *ProviderScoringConfig `yaml:"scoring" json:"scoring,omitempty"`
 	// ExtraParams are additional JSON fields merged into every upstream
 	// request for this provider (model-level extra_params win per key).
 	// hearim's correctness-critical fields (logprobs, max_tokens, ...) are
@@ -191,9 +192,10 @@ type PathsConfig struct {
 //	                      chat exact routes are vetoed for it (TODO.md §3.4)
 //	vision  - accepts image inputs
 type ModelConfig struct {
-	Name        string         `yaml:"name" json:"name"`
-	Type        string         `yaml:"type" json:"type,omitempty"`
-	ExtraParams map[string]any `yaml:"extra_params" json:"extra_params,omitempty"`
+	Scoring     *ProviderScoringConfig `yaml:"scoring" json:"scoring,omitempty"`
+	Name        string                 `yaml:"name" json:"name"`
+	Type        string                 `yaml:"type" json:"type,omitempty"`
+	ExtraParams map[string]any         `yaml:"extra_params" json:"extra_params,omitempty"`
 	// Thinking carries the model-card-documented reasoning behavior: how to
 	// disable it, and how to handle <think>-style output when it cannot be
 	// disabled. See ThinkingConfig.
@@ -205,6 +207,54 @@ type ModelConfig struct {
 	// Endpoint force-pins this model's scoring surface, overriding both the
 	// provider setting and capability resolution.
 	Endpoint *EndpointKind `yaml:"endpoint" json:"endpoint,omitempty"`
+}
+
+// ProviderScoringConfig overrides engine defaults; model fields override
+// provider fields individually. Pointer booleans preserve explicit false.
+type ProviderScoringConfig struct {
+	SelectedTokenIDs    *bool `yaml:"selected_token_ids" json:"selected_token_ids,omitempty"`
+	MaxSelectedTokenIDs int   `yaml:"max_selected_token_ids" json:"max_selected_token_ids,omitempty"`
+	PromptTokenLogprobs *bool `yaml:"prompt_token_logprobs" json:"prompt_token_logprobs,omitempty"`
+	// Constraint: none, allowed_token_ids (vLLM/generic), grammar (llama.cpp).
+	Constraint string `yaml:"constraint" json:"constraint,omitempty"`
+	// LogprobSpace describes the server's returned logprobs (raw or post-mask).
+	// This is an operator assertion, not a parameter that changes the server.
+	LogprobSpace string `yaml:"logprob_space" json:"logprob_space,omitempty"`
+}
+
+func validateProviderScoring(s *ProviderScoringConfig, engine EngineKind) error {
+	if s == nil {
+		return nil
+	}
+	if s.MaxSelectedTokenIDs < 0 {
+		return fmt.Errorf("scoring.max_selected_token_ids must be positive when set")
+	}
+	if s.LogprobSpace != "" && s.LogprobSpace != "raw" && s.LogprobSpace != "post-mask" {
+		return fmt.Errorf("scoring.logprob_space must be raw or post-mask")
+	}
+	switch s.Constraint {
+	case "", "none":
+	case "allowed_token_ids":
+		if engine != EngineVLLM && engine != EngineGeneric {
+			return fmt.Errorf("scoring.constraint allowed_token_ids is unsupported for %s", engine)
+		}
+	case "grammar":
+		if engine != EngineLlamaPP {
+			return fmt.Errorf("scoring.constraint grammar is supported only for llama.cpp")
+		}
+	default:
+		return fmt.Errorf("unknown scoring.constraint %q", s.Constraint)
+	}
+	if s.SelectedTokenIDs != nil && *s.SelectedTokenIDs && engine != EngineVLLM && engine != EngineSGLang && engine != EngineGeneric {
+		return fmt.Errorf("selected token IDs unsupported for %s", engine)
+	}
+	if s.PromptTokenLogprobs != nil && *s.PromptTokenLogprobs && engine != EngineVLLM && engine != EngineSGLang {
+		return fmt.Errorf("prompt token logprobs unsupported for %s", engine)
+	}
+	if s.LogprobSpace == "post-mask" && engine != EngineVLLM && engine != EngineGeneric {
+		return fmt.Errorf("scoring.logprob_space override supported only for vllm/generic-openai; native adapters determine it from the request")
+	}
+	return nil
 }
 
 // PromptConfig force-reassigns the prompt shape per model.
@@ -700,6 +750,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: duplicate provider id %q", p.ID)
 		}
 		seen[p.ID] = true
+		if err := validateProviderScoring(p.Scoring, p.Engine); err != nil {
+			return fmt.Errorf("config: provider %q: %w", p.ID, err)
+		}
+		for _, m := range p.Models {
+			if err := validateProviderScoring(m.Scoring, p.Engine); err != nil {
+				return fmt.Errorf("config: model %q: %w", m.Name, err)
+			}
+		}
 		switch p.Engine {
 		case EngineOllama, EngineLlamaPP, EngineVLLM, EngineSGLang, EngineGeneric:
 		default:

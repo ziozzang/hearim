@@ -101,7 +101,7 @@ func New(c *compile.Compiler, cfg *config.Config) *Evaluator {
 // of TODO.md §3.11 and reduces it to the public answer.
 func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.EvaluationPlan, qi int, route Route) (*QuestionResult, error) {
 	q := plan.Questions[qi]
-	caps := route.Adapter.Capabilities()
+	caps := provider.CapabilitiesForRoute(route.Adapter, route.BackendModel, route.Endpoint)
 
 	// Vision gate: image-bearing states require an explicit opt-in —
 	// models[].type: vision on a chat route with vision-capable transport.
@@ -125,7 +125,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 			"no token label registry for route %s", route.BackendModel)
 	}
 	ids, texts, bound := route.Registry.Bind(labelTexts(q))
-	if len(q.Candidates) > route.Registry.MaxExactCandidates && e.ScoringCfg.ChoiceTextMode == "disabled" {
+	if len(q.Candidates) > route.Registry.MaxExactCandidates && e.ScoringCfg.ChoiceTextMode == "disabled" && !caps.PromptTokenLogprobs {
 		return nil, jev.NewQuestionError(jev.CodeBackendProbabilityUnavailable, q.ID,
 			"%d candidates exceed max exact candidates %d and choice-text mode is disabled",
 			len(q.Candidates), route.Registry.MaxExactCandidates)
@@ -212,6 +212,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		req := scoreReq
 		req.CandidateTokenIDs = ids
 		req.ConstrainToCandidates = constrain
+		req.DisableSelectedTokenIDs = constrain // selected-ID route has already failed
 		req.TopK = topN
 		return route.Adapter.ScoreNextToken(ctx, req)
 	}
@@ -223,7 +224,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 			break
 		}
 	}
-	if idsResolved && caps.SupportsSelectedTokenIDs() {
+	if idsResolved && caps.SupportsSelectedTokenIDs() && (caps.MaxSelectedTokenIDs <= 0 || len(ids) <= caps.MaxSelectedTokenIDs) {
 		out, err := tryScore(false)
 		attempts = append(attempts, "selected-token-ids")
 		if err == nil && out.AllCandidatesPresent {
@@ -237,11 +238,14 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		// top-k pass.
 		req := scoreReq
 		req.CandidateTokenIDs = ids
+		req.DisableSelectedTokenIDs = true
 		req.TopK = topN
 		out, err := route.Adapter.ScoreNextToken(ctx, req)
 		attempts = append(attempts, fmt.Sprintf("top-k(n=%d)", topN))
 		if err == nil {
-			logprobs, method, space, usage = out.CandidateLogprobs, out.ScoringMethod, out.ProbabilitySpace, *out
+			if out.AllCandidatesPresent {
+				logprobs, method, space, usage = out.CandidateLogprobs, out.ScoringMethod, out.ProbabilitySpace, *out
+			}
 			if !out.AllCandidatesPresent {
 				// §7.3 step 3: one retry with a larger N, bounded by the
 				// discovered server cap (servers reject oversized N outright).
@@ -255,6 +259,10 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 						logprobs, method, space, usage = out2.CandidateLogprobs, out2.ScoringMethod, out2.ProbabilitySpace, *out2
 						attempts = append(attempts, fmt.Sprintf("top-k-retry(n=%d)", retry.TopK))
 					}
+				}
+				// Preserve legacy partial mode only after exact retries failed.
+				if logprobs == nil && !e.Strict {
+					logprobs, method, space, usage = out.CandidateLogprobs, out.ScoringMethod, out.ProbabilitySpace, *out
 				}
 			}
 		} else {
@@ -274,7 +282,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 		}
 	}
 
-	if logprobs == nil && supportsConstrainedVocab(caps) {
+	if logprobs == nil && supportsConstrainedVocab(caps) && !scoreReq.WaitClose {
 		out, err := tryScore(true)
 		attempts = append(attempts, "constrained-vocab")
 		if err == nil && out.AllCandidatesPresent {
@@ -332,6 +340,7 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	prof := scoring.CalibrationProfile{
 		Model: route.BackendModel, Engine: string(route.Engine),
 		TemplateVersion: plan.TemplateVersion, ScoringMethod: method, Tau: tau,
+		ProbabilitySpace: space, ProviderProfile: provider.ScoringProfileKey(route.Adapter, route.BackendModel),
 	}
 	res.ProfileID = prof.ID()
 

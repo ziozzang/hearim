@@ -7,6 +7,13 @@
 > before trusting a route; the readiness gate keeps unverified routes out
 > of rotation automatically. Last survey: **2026-09-21**.
 
+> **Source-review caveat (2026-09-22):** vLLM, SGLang, and llama.cpp rows below
+> are expectations, not live measurements. A [source-level audit](docs/PROVIDER-SOURCE-REVIEW.md)
+> identified mismatches now covered by parser/fallback corrections and
+> [provider/model scoring settings](docs/PROVIDER-SCORING.md). Native SGLang
+> does not support `sampling_params.allowed_token_ids`. Source-shaped regression
+> tests pass; live server/model compatibility still requires a conformance probe.
+
 ## Summary matrix
 
 | Engine / host | logprobs surface | tokenizer | vision | notes |

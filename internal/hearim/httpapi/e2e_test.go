@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // fakeUpstream is a vLLM-shaped backend: per-rune tokenizer, completions
 // with top_logprobs for the requested labels, deterministic distribution.
 type fakeUpstream struct {
+	mu              sync.Mutex
 	t               *testing.T
 	completionsSeen int
 	lastPrompts     []string
@@ -33,13 +35,15 @@ func (f *fakeUpstream) handler() http.Handler {
 		json.NewEncoder(w).Encode(map[string]any{"tokens": ids})
 	})
 	mux.HandleFunc("POST /v1/completions", func(w http.ResponseWriter, r *http.Request) {
-		f.completionsSeen++
 		var body struct {
 			Prompt          string `json:"prompt"`
 			LogprobTokenIDs []int  `json:"logprob_token_ids"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.completionsSeen++
 		f.lastPrompts = append(f.lastPrompts, body.Prompt)
+		f.mu.Unlock()
 
 		// Find the trailing answer marker and the delimiter after it.
 		// Distribution: label "2"/"B" favored.
@@ -238,6 +242,8 @@ func TestSystemOneEndToEnd(t *testing.T) {
 
 	// Fan-out shape: three upstream completions, all sharing the same state
 	// prefix (§1, §8.3).
+	up.mu.Lock()
+	defer up.mu.Unlock()
 	if up.completionsSeen < 3 {
 		t.Errorf("upstream calls = %d, want >= 3", up.completionsSeen)
 	}
@@ -416,6 +422,8 @@ func TestJevCandidatesExtension(t *testing.T) {
 		t.Error("method missing")
 	}
 	// The extension must forward the prompt bytes exactly.
+	up.mu.Lock()
+	defer up.mu.Unlock()
 	if len(up.lastPrompts) == 0 || up.lastPrompts[len(up.lastPrompts)-1] != "...\nANSWER:" {
 		t.Errorf("prompt forwarded = %v", up.lastPrompts)
 	}
