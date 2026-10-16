@@ -221,6 +221,12 @@ curl -s localhost:8080/v1/systemone \
 | `score` | 2~10단계 순서형 척도 | 확률 가중 `score`, `legend`, `probabilities`, `confidence` |
 | `noul` | 참/거짓 명제 | `noul` = P(true) |
 
+`legend`는 Jev API 규격을 따른다. 레벨 인덱스를 키로 하는 객체
+(`{"0": "Calm", "1": "Frustrated"}`)이고, 키는 `probabilities`와 같다.
+hearim 0.6.4 이하는 배열로 내보냈다. 그 형태를 유지하려면
+`gateway.score_legend: array`(또는 `hearim serve -score-legend array`)로,
+객체와 함께 비표준 필드 `legend_list`에 배열도 보내려면 `both`로 설정한다.
+
 ### OpenAI 호환 표면
 
 `POST /v1/completions`와 `POST /v1/chat/completions`는 기본 route의

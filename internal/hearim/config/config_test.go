@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -276,5 +277,24 @@ func TestBreakEvenDerivation(t *testing.T) {
 	}
 	if cost(0.30, gemmaIn, gemmaCached) <= cost(0.30, flashIn, flashCached) {
 		t.Error("flash should be cheaper above break-even")
+	}
+}
+
+func TestScoreLegendOption(t *testing.T) {
+	base := "gateway:\n  default_model: a\n%sproviders:\n  - id: p\n    engine: vllm\n    base_url: http://x\nmodel_aliases:\n  a: p:m\n"
+	cfg, err := Parse([]byte(fmt.Sprintf(base, "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gateway.ScoreLegend != "object" {
+		t.Fatalf("default score_legend = %q, want object", cfg.Gateway.ScoreLegend)
+	}
+	for _, v := range []string{"array", "both"} {
+		if _, err := Parse([]byte(fmt.Sprintf(base, "  score_legend: "+v+"\n"))); err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
+	}
+	if _, err := Parse([]byte(fmt.Sprintf(base, "  score_legend: list\n"))); err == nil {
+		t.Fatal("unknown score_legend must fail")
 	}
 }

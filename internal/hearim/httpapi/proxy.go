@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"hearim/internal/hearim/config"
 	"hearim/internal/hearim/eval"
 	"hearim/internal/hearim/jev"
 	"hearim/internal/hearim/provider"
@@ -26,6 +27,12 @@ func (s *Server) handleProxy(kind string) http.HandlerFunc {
 		route, err := s.Router.Resolve("")
 		if err != nil {
 			writeJevError(w, r, jev.NewError(jev.CodeModelNotFound, "%v", err))
+			return
+		}
+		if route.Engine == config.EngineJev {
+			writeJevError(w, r, jev.NewError(jev.CodeNoExactEvaluationRoute,
+				"default route %s:%s is a jev passthrough; OpenAI proxy endpoints need a token-scoring provider",
+				route.ProviderID, route.BackendModel))
 			return
 		}
 		pcfg := s.providerConfig(route.ProviderID)

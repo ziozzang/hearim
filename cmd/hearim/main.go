@@ -29,7 +29,7 @@ import (
 	"hearim/internal/hearim/selfupdate"
 )
 
-var version = "0.6.4"
+var version = "0.6.5"
 
 // updateRepo is the GitHub repository self-update pulls release builds from.
 const updateRepo = "ziozzang/hearim"
@@ -224,6 +224,7 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath, logLevel, logJSON := commonFlags(fs)
 	addr := fs.String("addr", "", "listen address (overrides config)")
+	scoreLegend := fs.String("score-legend", "", "score legend shape: object (Jev API) | array (hearim <= 0.6.4) | both (overrides gateway.score_legend)")
 	registryDir := fs.String("registry-dir", "data/registries", "token label registry directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -234,6 +235,12 @@ func cmdServe(args []string) error {
 	}
 	if *addr != "" {
 		cfg.Server.Addr = *addr
+	}
+	if *scoreLegend != "" {
+		cfg.Gateway.ScoreLegend = *scoreLegend
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
 	}
 
 	srv, err := httpapi.New(cfg, logger, *registryDir)
@@ -327,6 +334,10 @@ func cmdProbe(args []string) error {
 
 	reports := []*probe.Report{}
 	for _, t := range targets {
+		if t.provider.Engine == config.EngineJev {
+			logger.Info("skipping jev passthrough provider (no token surface to probe)", "provider", t.provider.ID)
+			continue
+		}
 		adpt, err := provider.NewAdapter(t.provider)
 		if err != nil {
 			return err
@@ -369,6 +380,7 @@ func cmdBench(args []string) error {
 	corpus := fs.String("corpus", "", "JSONL corpus path (required)")
 	alias := fs.String("model", "", "public model alias (defaults to gateway.default_model)")
 	permutations := fs.Int("permutations", 0, "label-order permutations per choice record (§12.3)")
+	reference := fs.String("reference", "", "second model alias to compare against (e.g. a jev passthrough route); reports distribution agreement")
 	out := fs.String("out", "", "write JSON metrics to file")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -401,11 +413,33 @@ func cmdBench(args []string) error {
 	if err != nil {
 		return err
 	}
-	metrics, err := bench.Run(context.Background(), recs, route, srv.Compiler, cfg, *permutations)
+	metrics, answers, err := bench.RunDetailed(context.Background(), recs, route, srv.Compiler, cfg, *permutations)
 	if err != nil {
 		return err
 	}
-	data, _ := json.MarshalIndent(metrics, "", "  ")
+	var report any = metrics
+	if *reference != "" {
+		refRoute, err := srv.Router.Resolve(*reference)
+		if err != nil {
+			return fmt.Errorf("bench: -reference: %w", err)
+		}
+		refMetrics, refAnswers, err := bench.RunDetailed(context.Background(), recs, refRoute, srv.Compiler, cfg, *permutations)
+		if err != nil {
+			return err
+		}
+		cmp := map[string]any{
+			"model":     routeName(route.ProviderID, route.BackendModel),
+			"reference": routeName(refRoute.ProviderID, refRoute.BackendModel),
+			"agreement": bench.Compare(answers, refAnswers),
+		}
+		// Label metrics only mean something when every record is labeled.
+		if allLabeled(recs) {
+			cmp["model_metrics"] = metrics
+			cmp["reference_metrics"] = refMetrics
+		}
+		report = cmp
+	}
+	data, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(data))
 	if *out != "" {
 		if err := os.WriteFile(*out, data, 0o600); err != nil {
@@ -413,6 +447,17 @@ func cmdBench(args []string) error {
 		}
 	}
 	return nil
+}
+
+func routeName(providerID, model string) string { return providerID + ":" + model }
+
+func allLabeled(recs []bench.Record) bool {
+	for _, r := range recs {
+		if len(r.Expected) == 0 || string(r.Expected) == "null" {
+			return false
+		}
+	}
+	return true
 }
 
 func splitTarget(t string) (string, string) {

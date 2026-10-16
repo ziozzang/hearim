@@ -215,6 +215,46 @@ probe`를 먼저 돌리면 몇 번의 호출로 go/no-go가 나온다. 흥미로
 
 출처: [opencode.ai](https://opencode.ai), [opencode zen 문서](https://opencode.ai/docs/zen), [bitdoze 리뷰](https://www.bitdoze.com).
 
+### OpenCode Zen의 진짜 Jev (2026-10-16 실측) — 됨, `engine: jev`
+
+엔드포인트는 `https://opencode.ai/inference/systemone/v1/systemone`이고,
+모델은 `jev-1.13`(입력 $0.042/1M, 출력 무료)과 `jev-1.13-free`(기간
+한정 무료)다. TypeSafe 원본과 같은 계약이며 choice·score·noul과 한국어
+state를 확인했다. 질문 여러 개를 한 번에 보내도 0.5~0.8초가 걸린다.
+`jev-1.13-free`는 Console 키로 200을 돌려줬다(키 없이도 됐지만 문서는
+키 사용을 요구한다). 유료 `jev-1.13`은 잔액이 없으면
+402 `Insufficient account funds`가 난다.
+
+hearim은 이 엔드포인트를 `engine: jev` 프로바이더로 그대로 전달한다
+(토큰 스코어링 없음, 요청당 업스트림 호출 1회, 답은 변경 없이 반환,
+`x-jev-implementation: hearim-jev-passthrough`). 용도는 두 가지다.
+(1) `hearim bench -model <hearim route> -reference <jev route>`로 분포
+일치도(top-1 일치율, total variation)를 재는 기준값. (2) fallback
+체인의 마지막 단계.
+
+같은 날 비교 결과: 24문항 라벨 코퍼스, qwen3.6-flash(Qwen 플랜) 대
+jev-1.13-free.
+
+| | accuracy | NLL | Brier | ECE | 오류 |
+|---|---|---|---|---|---|
+| qwen3.6-flash (hearim) | 0.94 | 0.236 | 0.067 | 0.095 | 8/24 |
+| jev-1.13-free | 0.96 | 0.049 | 0.012 | 0.040 | 0/24 |
+
+두 쪽 모두 답한 16문항에서는 top-1이 100% 일치했고, 평균 TV는
+0.095였다(choice 0.19, score 0.11, noul 0.04). qwen의 오류 8건은 모두
+`backend_probability_unavailable`이다. top_logprobs 상한이 5라서 모델이
+확신할 때 나머지 라벨이 top-5 밖으로 밀려난 경우로, 정직한 거절이다.
+
+wire 차이: 실서버는 score `legend`를 인덱스 키 객체(`{"0":"Calm",...}`)로
+돌려주고, API 레퍼런스도 그렇게 정의한다. hearim 0.6.4 이하는 배열로
+내보냈다. 0.6.5부터는 객체가 기본이고, 이전 클라이언트를 위해
+`gateway.score_legend: array|both`를 둔다. passthrough는 업스트림 형태를
+그대로 두고, bench 디코더는 두 형태를 모두 받는다.
+
+참고로 opencode 앱 경유(`opencode serve` API)로는 logprob을 얻을 수
+없다. 모델 설정의 `logprobs`가 업스트림 요청에 전달되지 않고, 응답의
+logprobs도 메시지에 남지 않는다(mock 서버로 확인).
+
 ## 모델 카드 조사: thinking 제어는 모델마다 다르다
 
 - **gemma4** — **시스템 프롬프트 시작**의 `<|think|>` 토큰으로 토글.

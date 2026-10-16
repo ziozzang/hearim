@@ -6,6 +6,7 @@ package jev
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // QuestionType is one of the three System One primitives.
@@ -269,13 +270,55 @@ type ChoiceAnswer struct {
 	Confidence    float64            `json:"confidence"`
 }
 
+// Score legend wire shapes (gateway.score_legend).
+const (
+	LegendObject = "object" // Jev API: {"0": "Calm", ...}
+	LegendArray  = "array"  // hearim <= 0.6.4: ["Calm", ...]
+	LegendBoth   = "both"   // object in "legend", array in "legend_list"
+)
+
 // ScoreAnswer is the answer payload for score questions.
 type ScoreAnswer struct {
-	Type          string             `json:"type"`
-	Score         float64            `json:"score"`
-	Legend        []string           `json:"legend"`
+	Type  string  `json:"type"`
+	Score float64 `json:"score"`
+	// Legend maps each level index (string key, matching Probabilities)
+	// to its description, as the Jev API defines it (map<string, string>).
+	Legend        map[string]string  `json:"legend"`
 	Probabilities map[string]float64 `json:"probabilities"`
 	Confidence    float64            `json:"confidence"`
+	// LegendFormat picks the encoded legend shape; empty means object.
+	LegendFormat string `json:"-"`
+}
+
+// LegendList returns the legend ordered by level index.
+func (a ScoreAnswer) LegendList() []string {
+	out := make([]string, 0, len(a.Legend))
+	for i := 0; ; i++ {
+		v, ok := a.Legend[strconv.Itoa(i)]
+		if !ok {
+			return out
+		}
+		out = append(out, v)
+	}
+}
+
+// MarshalJSON encodes the legend in the configured shape.
+func (a ScoreAnswer) MarshalJSON() ([]byte, error) {
+	w := struct {
+		Type          string             `json:"type"`
+		Score         float64            `json:"score"`
+		Legend        any                `json:"legend"`
+		LegendList    []string           `json:"legend_list,omitempty"`
+		Probabilities map[string]float64 `json:"probabilities"`
+		Confidence    float64            `json:"confidence"`
+	}{Type: a.Type, Score: a.Score, Legend: a.Legend, Probabilities: a.Probabilities, Confidence: a.Confidence}
+	switch a.LegendFormat {
+	case LegendArray:
+		w.Legend = a.LegendList()
+	case LegendBoth:
+		w.LegendList = a.LegendList()
+	}
+	return json.Marshal(w)
 }
 
 // NoulAnswer is the answer payload for noul questions.

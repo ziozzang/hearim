@@ -26,17 +26,19 @@ import (
 
 // Server is the assembled gateway.
 type Server struct {
-	Cfg        *config.Config
-	Adapters   map[string]provider.Adapter
-	Router     *router.Router
-	Evaluator  *eval.Evaluator
-	Compiler   *compile.Compiler
-	Schedulers map[string]*schedule.Scheduler
-	Budget     *usage.Budget
-	Ledger     *usage.Ledger
-	Logger     *slog.Logger
-	APIKeys    map[string]bool
-	Metrics    *metrics.Registry
+	Cfg      *config.Config
+	Adapters map[string]provider.Adapter
+	// JevUpstreams holds engine "jev" providers (verbatim passthrough).
+	JevUpstreams map[string]*provider.JevUpstream
+	Router       *router.Router
+	Evaluator    *eval.Evaluator
+	Compiler     *compile.Compiler
+	Schedulers   map[string]*schedule.Scheduler
+	Budget       *usage.Budget
+	Ledger       *usage.Ledger
+	Logger       *slog.Logger
+	APIKeys      map[string]bool
+	Metrics      *metrics.Registry
 
 	routesMu    sync.RWMutex
 	routes      []eval.Route    // unique provider:model routes
@@ -52,15 +54,16 @@ func New(cfg *config.Config, logger *slog.Logger, registryDir string) (*Server, 
 		logger = slog.Default()
 	}
 	s := &Server{
-		Cfg:         cfg,
-		Adapters:    map[string]provider.Adapter{},
-		Schedulers:  map[string]*schedule.Scheduler{},
-		Budget:      usage.NewBudget(cfg.Budget),
-		Ledger:      usage.NewLedger(),
-		Logger:      logger,
-		Metrics:     metrics.New(),
-		ready:       map[string]bool{},
-		registryDir: registryDir,
+		Cfg:          cfg,
+		Adapters:     map[string]provider.Adapter{},
+		JevUpstreams: map[string]*provider.JevUpstream{},
+		Schedulers:   map[string]*schedule.Scheduler{},
+		Budget:       usage.NewBudget(cfg.Budget),
+		Ledger:       usage.NewLedger(),
+		Logger:       logger,
+		Metrics:      metrics.New(),
+		ready:        map[string]bool{},
+		registryDir:  registryDir,
 	}
 	s.Compiler = compile.New(cfg.Compiler)
 	s.Evaluator = eval.New(s.Compiler, cfg)
@@ -76,6 +79,11 @@ func New(cfg *config.Config, logger *slog.Logger, registryDir string) (*Server, 
 	}
 
 	for _, pc := range cfg.Providers {
+		if pc.Engine == config.EngineJev {
+			s.JevUpstreams[pc.ID] = provider.NewJevUpstream(pc)
+			s.Schedulers[pc.ID] = schedule.New(pc.Concurrency, 10*time.Millisecond)
+			continue
+		}
 		adpt, err := provider.NewAdapter(pc)
 		if err != nil {
 			return nil, err
@@ -158,6 +166,9 @@ func (s *Server) providerForModel(model string) string {
 			if _, ok := s.Adapters[c.Provider]; ok {
 				return c.Provider
 			}
+			if _, ok := s.JevUpstreams[c.Provider]; ok {
+				return c.Provider
+			}
 		}
 	}
 	for _, p := range s.Cfg.Providers {
@@ -175,6 +186,9 @@ func (s *Server) providerForModel(model string) string {
 // the token label registry at boot.
 func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, error) {
 	providerID, model := splitTarget(target)
+	if up, ok := s.JevUpstreams[providerID]; ok {
+		return s.buildJevRoute(providerID, model, up), nil
+	}
 	adpt, ok := s.Adapters[providerID]
 	if !ok {
 		return eval.Route{}, fmt.Errorf("no provider %q", providerID)
@@ -307,6 +321,28 @@ func (s *Server) buildRoute(ctx context.Context, target string) (eval.Route, err
 	return route, nil
 }
 
+// buildJevRoute binds an engine "jev" target. There is no label registry to
+// build: the upstream owns tokenization and scoring, so the route is ready
+// as soon as it is configured (upstream errors surface per request).
+func (s *Server) buildJevRoute(providerID, model string, up *provider.JevUpstream) eval.Route {
+	pcfg := s.providerConfig(providerID)
+	route := eval.Route{
+		Jev:          up,
+		ProviderID:   providerID,
+		BackendModel: model,
+		Engine:       config.EngineJev,
+		CachePlan:    "upstream",
+		ModelCfg:     pcfg.Models.Find(model),
+	}
+	for i, cand := range s.Cfg.Router.Candidates {
+		if cand.Model == model {
+			route.Pricing = &s.Cfg.Router.Candidates[i]
+			break
+		}
+	}
+	return route
+}
+
 // probeRequest is the fixed boot probe request (deterministic prompt).
 func probeRequest() *jev.ParsedRequest {
 	pr, err := jev.Validate([]byte(`{"model":"probe","state":"hearim token label registry probe","questions":{"probe":{"type":"noul","instructions":"Answer with the single best label for the state.","criteria":{"true":"the proposition holds","false":"the proposition does not hold"}}}}`))
@@ -346,6 +382,9 @@ func tokenizerRevisionOf(adpt provider.Adapter) string {
 }
 
 func routeReady(r eval.Route) bool {
+	if r.Engine == config.EngineJev {
+		return r.Jev != nil
+	}
 	if r.Registry == nil {
 		return false
 	}

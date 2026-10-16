@@ -222,8 +222,8 @@ func TestSystemOneEndToEnd(t *testing.T) {
 		t.Errorf("probabilities sum = %v", sum)
 	}
 	var score struct {
-		Score  float64  `json:"score"`
-		Legend []string `json:"legend"`
+		Score  float64           `json:"score"`
+		Legend map[string]string `json:"legend"`
 	}
 	json.Unmarshal(out.Answers["quality"], &score)
 	if len(score.Legend) != 4 {

@@ -946,7 +946,7 @@ Choice:
 
 Score:
   score = Σ(levelIndex × p[levelIndex])
-  legend = criteria
+  legend[levelIndex] = criteria[levelIndex]   (Jev: map<string, string>, 키는 probabilities와 같다)
   probabilities[levelIndex] = p
 
 Noul:
@@ -1483,3 +1483,10 @@ Outlines/Guidance식 FSM은 multi-token 선택지를 생성 제약하는 데 강
 
 이 구조라면 cloud 월정액과 로컬 추론 엔진을 함께 사용하면서 입력 token 기반 비용 계산, cache 친화적 prefill, A/B/C/D 객관식화, Choice/Score/Noul API 호환을 하나의 일관된 실행 모델로 묶을 수 있다.
 
+
+## 미구현: score 구조화 criteria (2026-10-16)
+
+Jev API는 score criteria를 문자열 대신 객체(`{"what": ..., "examples": [...]}`)로
+받을 수 있고, 그때 응답 `legend` 값도 같은 객체가 된다. hearim은 현재 문자열
+배열만 받고 이 형태를 422로 거절한다. passthrough(`engine: jev`)로는 그대로
+전달된다.

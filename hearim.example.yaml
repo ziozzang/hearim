@@ -9,6 +9,11 @@ gateway:
   strict_candidate_probabilities: true
   confidence_method: normalized-entropy-v1
   # partial_answers: true   # non-standard: per-question failures don't fail the request
+  # Score legend shape (also `hearim serve -score-legend`):
+  #   object - Jev API, {"0": "Calm", ...} (default)
+  #   array  - hearim <= 0.6.4, ["Calm", ...]
+  #   both   - object in "legend" plus the array in non-standard "legend_list"
+  score_legend: object
 
 server:
   addr: ":8080"
@@ -119,12 +124,26 @@ providers:
     selected_token_field: token_ids_logprob
     prefix_caching: radix
 
+  # Real Jev, passed through verbatim (engine: jev). No token scoring in
+  # hearim: one upstream call per request, answers returned unchanged. Use it
+  # as a reference oracle (`hearim bench -reference jev-real`) or as the last
+  # hop of a fallback chain. OpenCode Zen serves jev-1.13 (paid) and
+  # jev-1.13-free (limited time); TypeSafe's own API is base_url
+  # https://api.typesafe.ai with model jev-latest.
+  - id: opencode-zen
+    engine: jev
+    base_url: https://opencode.ai/inference/systemone/v1
+    api_key: ${OPENCODE_API_KEY}
+    concurrency: 2
+    models: ["jev-1.13-free", "jev-1.13"]
+
 model_aliases:
   jev-local-auto: policy:auto-v1
   jev-gemma4: ollama-cloud:gemma4:31b
   jev-deepseek-flash: ollama-cloud:deepseek-v4.1-flash
   jev-gpt-oss-20b: ollama-cloud:gpt-oss:20b
   jev-vllm: vllm-local:google/gemma-4-31B-it
+  jev-real: opencode-zen:jev-1.13-free
   # Bare backend model names also resolve to their serving provider, e.g.
   # "gemma4:31b". Ordered fallback chains:
 model_alias_chains:

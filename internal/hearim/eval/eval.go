@@ -29,6 +29,9 @@ type Route struct {
 	// ModelCfg carries the configured upstream LLM type (chat|thinking|
 	// vision) and per-model extra parameters.
 	ModelCfg *config.ModelConfig
+	// Jev is set (and Adapter nil) on engine "jev" routes: the request is
+	// forwarded to a real System One endpoint instead of being compiled.
+	Jev *provider.JevUpstream
 }
 
 // ModelCfgThinking returns the model's thinking configuration, if any.
@@ -83,12 +86,15 @@ type Evaluator struct {
 	Policy           config.BackendPolicyConfig
 	Strict           bool
 	MinCandidateMass float64
+	// ScoreLegend is gateway.score_legend, stamped on score answers.
+	ScoreLegend string
 }
 
 // New builds an evaluator from configuration.
 func New(c *compile.Compiler, cfg *config.Config) *Evaluator {
 	return &Evaluator{
 		Compiler:         c,
+		ScoreLegend:      cfg.Gateway.ScoreLegend,
 		ScoringCfg:       cfg.Scoring,
 		CompilerCfg:      cfg.Compiler,
 		Policy:           cfg.BackendPolicy,
@@ -350,6 +356,9 @@ func (e *Evaluator) EvaluateQuestion(ctx context.Context, plan *compile.Evaluati
 	}
 
 	answer, err := reduce(q, probs, tau)
+	if sa, ok := answer.(*jev.ScoreAnswer); ok {
+		sa.LegendFormat = e.ScoreLegend
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -497,13 +506,9 @@ func reduce(q *compile.CompiledQuestion, probs []float64, tau float64) (any, err
 		for i, c := range q.Candidates {
 			pm[c.PublicKey] = probs[i]
 		}
-		legend := make([]string, 0, len(q.Candidates))
+		legend := make(map[string]string, len(q.Candidates))
 		for _, c := range q.Candidates {
-			idx, _ := c.PublicValue.(int)
-			for len(legend) <= idx {
-				legend = append(legend, "")
-			}
-			legend[idx] = c.SequenceText
+			legend[c.PublicKey] = c.SequenceText
 		}
 		return &jev.ScoreAnswer{
 			Type:          "score",

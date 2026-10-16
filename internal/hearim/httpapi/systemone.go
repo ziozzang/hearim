@@ -13,6 +13,7 @@ import (
 	"hearim/internal/hearim/config"
 	"hearim/internal/hearim/eval"
 	"hearim/internal/hearim/jev"
+	"hearim/internal/hearim/provider"
 	"hearim/internal/hearim/schedule"
 	"hearim/internal/hearim/usage"
 )
@@ -55,6 +56,11 @@ func (s *Server) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 		return
 	case usage.BudgetHardStop:
 		writeJevError(w, r, jev.NewError(jev.CodeBackendOverloaded, "budget exhausted (hard stop)"))
+		return
+	}
+
+	if route.Engine == config.EngineJev {
+		s.handleJevPassthrough(w, r, body, parsed, route)
 		return
 	}
 
@@ -142,6 +148,88 @@ func (s *Server) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 	setDiagnostics(w, meta)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		s.Logger.Error("encode response", "err", err)
+	}
+}
+
+// handleJevPassthrough serves an engine "jev" route: the validated request
+// goes verbatim to the real System One endpoint (one upstream call for all
+// questions) and its answers come back unchanged, under the public model.
+func (s *Server) handleJevPassthrough(w http.ResponseWriter, r *http.Request, body []byte,
+	parsed *jev.ParsedRequest, route eval.Route) {
+	sch := s.Schedulers[route.ProviderID]
+	if sch == nil {
+		writeJevError(w, r, jev.NewError(jev.CodeInternal, "no scheduler for provider %s", route.ProviderID))
+		return
+	}
+	var res *provider.JevUpstreamResult
+	var uerr error
+	err := sch.Submit(r.Context(), schedule.Task{
+		PrefixKey: route.ProviderID,
+		Run: func(ctx context.Context) {
+			res, uerr = route.Jev.SystemOne(ctx, body, route.BackendModel)
+		},
+	})
+	if err == nil {
+		err = uerr
+	}
+	if err != nil {
+		writeJevError(w, r, jevUpstreamError(err))
+		return
+	}
+
+	answers := make(map[string]any, len(res.Answers))
+	for id, raw := range res.Answers {
+		answers[id] = raw
+	}
+	resp := &jev.Response{
+		Model:   parsed.Model,
+		Answers: answers,
+		Usage:   res.Usage,
+	}
+	agg := usage.Aggregate{
+		InputTokens:   res.Usage.InputTokens,
+		OutputTokens:  res.Usage.OutputTokens,
+		UpstreamCalls: 1,
+	}
+	s.recordUsage(route, agg)
+	s.recordQuestionMetrics(route.BackendModel, route.ProviderID, "upstream-jev", "", agg)
+
+	w.Header().Set("Content-Type", "application/json")
+	setDiagnostics(w, eval.Meta{
+		Implementation: "hearim-jev-passthrough",
+		BackendModel:   route.ProviderID + "/" + route.BackendModel,
+		QuestionCalls:  1,
+		CachePlan:      route.CachePlan,
+		// Confidence and probabilities are the upstream model's own.
+		ConfidenceMethod: "upstream",
+		ScoringMethods:   []string{"upstream-jev"},
+		UpstreamHeaders:  res.Headers,
+	})
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.Logger.Error("encode response", "err", err)
+	}
+}
+
+// jevUpstreamError maps a passthrough failure onto the Jev error surface.
+// Upstream 4xx bodies are not echoed beyond the classified message.
+func jevUpstreamError(err error) *jev.Error {
+	var ue *provider.UpstreamError
+	if !errors.As(err, &ue) {
+		return jev.NewError(jev.CodeBackendUnavailable, "jev upstream: %v", err)
+	}
+	switch {
+	case ue.Status == http.StatusUnauthorized || ue.Status == http.StatusForbidden:
+		return jev.NewError(jev.CodeBackendUnavailable, "jev upstream rejected credentials (%d)", ue.Status)
+	case ue.Status == http.StatusPaymentRequired:
+		return jev.NewError(jev.CodeBackendUnavailable, "jev upstream refused payment (402): %s", ue.Message)
+	case ue.Status == http.StatusTooManyRequests:
+		return jev.NewError(jev.CodeRateLimited, "jev upstream rate limited")
+	case ue.Status == http.StatusUnprocessableEntity || ue.Status == http.StatusBadRequest:
+		return jev.NewError(jev.CodeValidationFailed, "jev upstream rejected request (%d): %s", ue.Status, ue.Message)
+	case ue.Status == 529:
+		return jev.NewError(jev.CodeBackendOverloaded, "jev upstream overloaded")
+	default:
+		return jev.NewError(jev.CodeBackendUnavailable, "jev upstream %d: %s", ue.Status, ue.Message)
 	}
 }
 

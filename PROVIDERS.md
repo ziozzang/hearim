@@ -225,6 +225,47 @@ serve that contract shape.
 
 Sources: [opencode.ai](https://opencode.ai), [opencode zen docs](https://opencode.ai/docs/zen), [bitdoze review](https://www.bitdoze.com).
 
+### Real Jev on OpenCode Zen (measured 2026-10-16) — works, `engine: jev`
+
+Endpoint `https://opencode.ai/inference/systemone/v1/systemone`; models
+`jev-1.13` ($0.042/1M input, output free) and `jev-1.13-free` (limited
+time). Same contract as TypeSafe's own API: choice, score and noul all
+verified, Korean state included, 0.5–0.8 s per multi-question request.
+`jev-1.13-free` answered 200 with a Console key (it also answered without
+one, but the docs ask for a key). The paid `jev-1.13` returns
+402 `Insufficient account funds` on an unfunded account.
+
+hearim forwards it verbatim through an `engine: jev` provider: no token
+scoring, one upstream call per request, answers unchanged,
+`x-jev-implementation: hearim-jev-passthrough`. Two uses: (1) a reference
+oracle — `hearim bench -model <hearim route> -reference <jev route>`
+reports distribution agreement (top-1 agreement, total variation); (2) the
+last hop of a fallback chain.
+
+Same-day comparison on a 24-record labeled corpus, qwen3.6-flash (Qwen
+plan) vs jev-1.13-free:
+
+| | accuracy | NLL | Brier | ECE | errors |
+|---|---|---|---|---|---|
+| qwen3.6-flash (hearim) | 0.94 | 0.236 | 0.067 | 0.095 | 8/24 |
+| jev-1.13-free | 0.96 | 0.049 | 0.012 | 0.040 | 0/24 |
+
+On the 16 records both answered, top-1 agreement was 100% and mean total
+variation 0.095 (choice 0.19, score 0.11, noul 0.04). All 8 qwen errors are
+`backend_probability_unavailable`: with top_logprobs capped at 5, a
+confident model pushes the other labels out of the top 5 — an honest
+refusal.
+
+Wire difference: the live endpoint returns the score `legend` as an
+index-keyed object (`{"0":"Calm",...}`), as the API reference specifies.
+hearim ≤ 0.6.4 emitted an array; from 0.6.5 the default is the object, with
+`gateway.score_legend: array|both` for older clients. The passthrough keeps
+the upstream shape; the bench decoder accepts both.
+
+Going through the opencode app (`opencode serve` API) yields no logprobs:
+`logprobs` in model settings is not forwarded upstream and response
+logprobs are dropped (verified with a mock server).
+
 ## Model-card survey: thinking control differs per model
 
 - **gemma4** — thinking toggles via a `<|think|>` token at the start of the

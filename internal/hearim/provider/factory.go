@@ -19,6 +19,8 @@ func NewAdapter(cfg config.ProviderConfig) (Adapter, error) {
 		return NewSGLang(cfg), nil
 	case config.EngineGeneric:
 		return NewGeneric(cfg), nil
+	case config.EngineJev:
+		return nil, fmt.Errorf("provider: %s uses engine jev, which has no token-scoring adapter (use NewJevUpstream)", cfg.ID)
 	default:
 		return nil, fmt.Errorf("provider: unknown engine %q for %s", cfg.Engine, cfg.ID)
 	}

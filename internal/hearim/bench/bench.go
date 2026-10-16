@@ -17,6 +17,7 @@ import (
 	"hearim/internal/hearim/config"
 	"hearim/internal/hearim/eval"
 	"hearim/internal/hearim/jev"
+	"hearim/internal/hearim/provider"
 )
 
 // Record is one labeled corpus line.
@@ -66,8 +67,17 @@ type Metrics struct {
 // bias (§12.3); the restored distribution is mapped back to option meaning.
 func Run(ctx context.Context, recs []Record, route eval.Route, compiler *compile.Compiler,
 	cfg *config.Config, permutations int) (*Metrics, error) {
+	m, _, err := RunDetailed(ctx, recs, route, compiler, cfg, permutations)
+	return m, err
+}
+
+// RunDetailed is Run that also returns each record's answer (nil where the
+// record failed), index-aligned with recs, for cross-route comparison.
+func RunDetailed(ctx context.Context, recs []Record, route eval.Route, compiler *compile.Compiler,
+	cfg *config.Config, permutations int) (*Metrics, []any, error) {
 
 	ev := eval.New(compiler, cfg)
+	answers := make([]any, len(recs))
 	m := &Metrics{Records: len(recs)}
 	var latencies []float64
 	var masses []float64
@@ -85,23 +95,14 @@ func Run(ctx context.Context, recs []Record, route eval.Route, compiler *compile
 			m.Errors++
 			continue
 		}
-		pr, err := jev.Validate(body)
-		if err != nil {
-			m.Errors++
-			continue
-		}
-		plan, err := compiler.Compile(pr, route.BackendModel)
-		if err != nil {
-			m.Errors++
-			continue
-		}
-		res, err := ev.EvaluateQuestion(ctx, plan, 0, route)
+		res, err := evalOne(ctx, body, route, compiler, ev)
 		if err != nil {
 			m.Errors++
 			continue
 		}
 		latencies = append(latencies, float64(time.Since(start).Microseconds())/1000)
 		masses = append(masses, res.CandidateMass)
+		answers[idx] = res.Answer
 
 		switch ans := res.Answer.(type) {
 		case *jev.ChoiceAnswer:
@@ -146,11 +147,10 @@ func Run(ctx context.Context, recs []Record, route eval.Route, compiler *compile
 				correctP: ans.Probabilities[fmt.Sprintf("%d", expected)],
 			})
 		}
-		_ = idx
 	}
 
 	m.compute(outcomes, latencies, masses, permVars)
-	return m, nil
+	return m, answers, nil
 }
 
 // permuteVariance shuffles the listing order of choice criteria K times,
@@ -272,15 +272,7 @@ func evalChoiceProb(ctx context.Context, state json.RawMessage, q *jev.Question,
 	if err != nil {
 		return 0, err
 	}
-	pr, err := jev.Validate(body)
-	if err != nil {
-		return 0, err
-	}
-	plan, err := compiler.Compile(pr, route.BackendModel)
-	if err != nil {
-		return 0, err
-	}
-	res, err := ev.EvaluateQuestion(ctx, plan, 0, route)
+	res, err := evalOne(ctx, body, route, compiler, ev)
 	if err != nil {
 		return 0, err
 	}
@@ -289,6 +281,45 @@ func evalChoiceProb(ctx context.Context, state json.RawMessage, q *jev.Question,
 		return 0, fmt.Errorf("bench: not a choice answer")
 	}
 	return ca.Probabilities[ref], nil
+}
+
+// evalOne evaluates the single question "q" of a request body on a route.
+// Token-scoring routes compile and score locally; engine "jev" routes send
+// the body to the real System One endpoint. Candidate mass is 1 on jev
+// routes: the upstream distribution is already normalized.
+func evalOne(ctx context.Context, body []byte, route eval.Route,
+	compiler *compile.Compiler, ev *eval.Evaluator) (*eval.QuestionResult, error) {
+	pr, err := jev.Validate(body)
+	if err != nil {
+		return nil, err
+	}
+	if route.Engine == config.EngineJev {
+		if route.Jev == nil {
+			return nil, fmt.Errorf("bench: jev route %s has no upstream", route.ProviderID)
+		}
+		up, err := route.Jev.SystemOne(ctx, body, route.BackendModel)
+		if err != nil {
+			return nil, err
+		}
+		raw, ok := up.Answers["q"]
+		if !ok {
+			return nil, fmt.Errorf("bench: jev upstream returned no answer for q")
+		}
+		ans, err := provider.DecodeJevAnswer(raw)
+		if err != nil {
+			return nil, err
+		}
+		return &eval.QuestionResult{
+			ID: "q", Answer: ans, CandidateMass: 1,
+			InputTokens: up.Usage.InputTokens, OutputTokens: up.Usage.OutputTokens,
+			ScoringMethod: "upstream-jev",
+		}, nil
+	}
+	plan, err := compiler.Compile(pr, route.BackendModel)
+	if err != nil {
+		return nil, err
+	}
+	return ev.EvaluateQuestion(ctx, plan, 0, route)
 }
 
 type outcomeT struct {

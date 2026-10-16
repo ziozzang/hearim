@@ -23,6 +23,10 @@ const (
 	EngineVLLM    EngineKind = "vllm"
 	EngineSGLang  EngineKind = "sglang"
 	EngineGeneric EngineKind = "generic-openai"
+	// EngineJev forwards requests verbatim to a real System One endpoint
+	// (TypeSafe Jev, or OpenCode Zen's /inference/systemone). No token
+	// scoring happens in hearim; used as a reference oracle and fallback.
+	EngineJev EngineKind = "jev"
 )
 
 // EndpointKind identifies an upstream endpoint surface. See TODO.md §3.3.
@@ -86,6 +90,11 @@ type GatewayConfig struct {
 	// PartialAnswers enables the non-standard partial mode where per-question
 	// failures do not fail the whole request. TODO.md §10: off by default.
 	PartialAnswers bool `yaml:"partial_answers" json:"partial_answers"`
+	// ScoreLegend selects the wire shape of score answers' legend:
+	//   object - Jev API shape, {"0": "Calm", ...} (default)
+	//   array  - hearim <= 0.6.4 shape, ["Calm", ...]
+	//   both   - object in "legend" plus the array in non-standard "legend_list"
+	ScoreLegend string `yaml:"score_legend" json:"score_legend"`
 }
 
 type ServerConfig struct {
@@ -182,6 +191,8 @@ type PathsConfig struct {
 	Generate string `yaml:"generate" json:"generate"`
 	Tokenize string `yaml:"tokenize" json:"tokenize"`
 	Health   string `yaml:"health" json:"health"`
+	// SystemOne is the Jev endpoint for engine "jev" (default /v1/systemone).
+	SystemOne string `yaml:"systemone" json:"systemone"`
 }
 
 // ModelConfig is one upstream model with optional metadata. Type declares
@@ -601,6 +612,9 @@ func (c *Config) applyDefaults() {
 			p.SelectedTokenField = defaultSelectedTokenField(p.Engine)
 		}
 	}
+	if c.Gateway.ScoreLegend == "" {
+		c.Gateway.ScoreLegend = "object"
+	}
 	if len(c.BackendPolicy.EndpointPreference) == 0 {
 		c.BackendPolicy.EndpointPreference = []EndpointKind{
 			EndpointCompletions, EndpointNativeGenerate, EndpointChatCompletion,
@@ -741,6 +755,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("config: gateway.default_model %q is not a model alias or provider:model route", c.Gateway.DefaultModel)
 		}
 	}
+	switch c.Gateway.ScoreLegend {
+	case "", "object", "array", "both":
+	default:
+		return fmt.Errorf("config: gateway.score_legend must be object, array or both (got %q)", c.Gateway.ScoreLegend)
+	}
 	seen := map[string]bool{}
 	for _, p := range c.Providers {
 		if p.ID == "" {
@@ -759,7 +778,7 @@ func (c *Config) Validate() error {
 			}
 		}
 		switch p.Engine {
-		case EngineOllama, EngineLlamaPP, EngineVLLM, EngineSGLang, EngineGeneric:
+		case EngineOllama, EngineLlamaPP, EngineVLLM, EngineSGLang, EngineGeneric, EngineJev:
 		default:
 			return fmt.Errorf("config: provider %q: unknown engine %q", p.ID, p.Engine)
 		}
@@ -874,6 +893,7 @@ func validatePaths(p *PathsConfig) error {
 		"generate":         p.Generate,
 		"tokenize":         p.Tokenize,
 		"health":           p.Health,
+		"systemone":        p.SystemOne,
 	}
 	for name, v := range fields {
 		if v != "" && !strings.HasPrefix(v, "/") {

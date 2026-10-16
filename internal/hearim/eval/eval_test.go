@@ -270,7 +270,7 @@ func TestScoreAndNoulReduction(t *testing.T) {
 	if math.Abs(sa.Score-1.85) > 1e-9 {
 		t.Errorf("score = %v, want 1.85", sa.Score)
 	}
-	if len(sa.Legend) != 4 || sa.Legend[2] != "good" {
+	if len(sa.Legend) != 4 || sa.Legend["2"] != "good" {
 		t.Errorf("legend = %v", sa.Legend)
 	}
 	if math.Abs(sa.Probabilities["2"]-0.60) > 1e-9 {

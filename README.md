@@ -232,6 +232,12 @@ All three primitives are supported:
 | `score` | ordinal scale of 2–10 levels | probability-weighted `score`, `legend`, `probabilities`, `confidence` |
 | `noul` | true/false proposition | `noul` = P(true) |
 
+`legend` follows the Jev API: an object keyed by level index
+(`{"0": "Calm", "1": "Frustrated"}`), the same keys as `probabilities`.
+hearim ≤ 0.6.4 emitted an array; set `gateway.score_legend: array` (or
+`hearim serve -score-legend array`) to keep that shape, or `both` to send
+the object plus the array in a non-standard `legend_list` field.
+
 ### OpenAI-compatible surface
 
 `POST /v1/completions` and `POST /v1/chat/completions` are transparent
